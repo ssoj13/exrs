@@ -427,6 +427,45 @@ impl ReadDeepImage<AllLayers> {
 }
 
 // ============================================================================
+// Public helpers for unified reading
+// ============================================================================
+
+/// Read deep layer samples from a reader.
+///
+/// This is a low-level helper for unified deep/flat reading pipelines.
+/// Returns just the channel data without the full [`Layer`] wrapper.
+///
+/// # Arguments
+///
+/// * `reader` - Reader positioned at start of file
+/// * `layer_index` - Index of the deep layer to read
+/// * `pedantic` - Use strict error handling
+///
+/// # Returns
+///
+/// [`AnyChannels<DeepSamples>`] containing all channels with their deep sample data.
+///
+/// # Errors
+///
+/// Returns error if:
+/// - Layer index is out of bounds
+/// - Layer is not a deep layer
+/// - Decompression fails
+///
+/// # See Also
+///
+/// - [`crate::image::read::any_samples`] - Unified deep/flat reading
+pub fn read_deep_layer_samples<R: Read + Seek>(
+    reader: Reader<R>,
+    layer_index: usize,
+    pedantic: bool,
+) -> Result<AnyChannels<DeepSamples>> {
+    let parallel = cfg!(feature = "rayon");
+    let layer = read_deep_layer_internal(reader, layer_index, pedantic, parallel)?;
+    Ok(layer.channel_data)
+}
+
+// ============================================================================
 // Internal implementation
 // ============================================================================
 

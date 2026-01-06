@@ -42,6 +42,7 @@
 //    is converted to the clean image structure, without temporary data.
 
 pub mod any_channels;
+pub mod any_samples;
 pub mod deep;
 pub mod image;
 pub mod layers;
@@ -96,6 +97,20 @@ pub fn read_first_flat_layer_from_file(
     read()
         .no_deep_data()
         .largest_resolution_level()
+        .all_channels()
+        .first_valid_layer()
+        .all_attributes()
+        .from_file(path)
+}
+
+/// Read first layer from file, auto-detecting deep vs flat data.
+/// Returns unified [`DeepAndFlatSamples`] that works with both data types.
+/// Uses parallel decompression and relaxed error handling.
+/// Inspect the source code of this function if you need customization.
+pub fn read_first_any_layer_from_file(
+    path: impl AsRef<Path>,
+) -> Result<any_samples::AnyImage> {
+    any_samples::read_any_samples()
         .all_channels()
         .first_valid_layer()
         .all_attributes()
@@ -232,5 +247,46 @@ impl ReadBuilder {
     // e. g. `let floats = reader.any_channels_with(|sample, f32_samples| f32_samples[index] = sample as f32)`
     // pub fn no_deep_data_with <S> (self, storage: S) -> FlatSamplesWith<S> {  }
 
-    // pub fn flat_and_deep_data(self) -> ReadAnySamples { ReadAnySamples }
+    /// Read any sample type (deep or flat), auto-detecting from the file.
+    ///
+    /// This is the most flexible option when you don't know if the file
+    /// contains deep or flat data. The reader checks the header and routes
+    /// to the appropriate pipeline automatically.
+    ///
+    /// Returns [`DeepAndFlatSamples`](crate::image::DeepAndFlatSamples) which
+    /// can be either deep or flat.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use exrs::prelude::*;
+    ///
+    /// // Works with both deep and flat files
+    /// let image = read()
+    ///     .flat_and_deep_data()
+    ///     .all_channels()
+    ///     .first_valid_layer()
+    ///     .all_attributes()
+    ///     .from_file("unknown.exr")?;
+    ///
+    /// // Check what type we got
+    /// for ch in &image.layer_data.channel_data.list {
+    ///     if ch.sample_data.is_deep() {
+    ///         println!("Deep channel: {}", ch.name);
+    ///     } else {
+    ///         println!("Flat channel: {}", ch.name);
+    ///     }
+    /// }
+    /// ```
+    ///
+    /// # See Also
+    ///
+    /// - [`no_deep_data`](Self::no_deep_data): For flat-only files (faster)
+    /// - [`deep_data`](Self::deep_data): For deep-only files
+    /// - [`any_samples::read_any_samples`]: Standalone entry point
+    ///
+    /// Implements: DEAD_CODE_ANALYSIS.md item #8
+    pub fn flat_and_deep_data(self) -> any_samples::ReadAnySamples {
+        any_samples::ReadAnySamples
+    }
 }

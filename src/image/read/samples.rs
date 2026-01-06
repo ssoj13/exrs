@@ -98,16 +98,11 @@ impl ReadFlatSamples {
     }
 }
 
-// Future: AnySamplesReader for reading either deep or flat samples.
-// The DeepAndFlatSamples enum is now implemented in crate::image::mod.rs.
-// Implementing the reader requires:
-// 1. Detecting header.deep to choose storage type
-// 2. Routing blocks to the appropriate reader
-// See: DEAD_CODE_ANALYSIS.md item #8
-// pub struct AnySamplesReader {
-//     resolution: Vec2<usize>,
-//     samples: DeepAndFlatSamples,
-// }
+// Re-export unified deep/flat reader from any_samples module.
+// This provides seamless API for reading files without knowing if they're deep or flat.
+pub use crate::image::read::any_samples::{
+    read_any_samples, AnyImage, AnyLayersImage, ReadAnySamples,
+};
 
 /// Processes pixel blocks from a file and accumulates them into a grid of samples, for example "Red" or "Alpha".
 #[derive(Debug, Clone, PartialEq)]

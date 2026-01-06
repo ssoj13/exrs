@@ -290,31 +290,47 @@ Needed for proper subsampling support in compression methods. Currently subsampl
 
 ---
 
-## 8. AnySamplesReader - UNFINISHED FEATURE
+## 8. AnySamplesReader - ✅ COMPLETED
 
-**Location:** `src/image/read/samples.rs:38-41`
+**Location:** `src/image/read/any_samples.rs`
 
+**Status:** IMPLEMENTED (2026-01-06)
+
+**Implementation:**
+- Added `any_samples.rs` module with full builder API
+- Added `ReadAnySamples` entry point struct
+- Added `ReadAnyAllChannels`, `ReadAnyFirstLayer`, `ReadAnyAllLayers` builders
+- Added `ReadAnyImage<LayerSelection>` final reader with `pedantic()` and `non_parallel()` options
+- Added `AnyImage` and `AnyLayersImage` type aliases
+- Added `any_data()` method to `ReadBuilder` in mod.rs
+- Added `read_deep_layer_samples()` helper to deep.rs
+- Uses existing flat/deep pipelines internally
+- Full rustdoc documentation with examples
+
+**Usage:**
 ```rust
-/*pub struct AnySamplesReader { TODO
-    resolution: Vec2<usize>,
-    samples: DeepAndFlatSamples
-}*/
+use exrs::prelude::*;
+use exrs::image::read::any_samples::read_any_samples;
+
+// Automatically detects deep vs flat
+let image = read_any_samples()
+    .all_channels()
+    .first_valid_layer()
+    .all_attributes()
+    .from_file("unknown_type.exr")?;
+
+// Check what we got
+for channel in &image.layer_data.channel_data.list {
+    match &channel.sample_data {
+        DeepAndFlatSamples::Deep(deep) => {
+            println!("Deep channel: {} samples", deep.total_samples());
+        }
+        DeepAndFlatSamples::Flat(flat) => {
+            println!("Flat channel: {} samples", flat.len());
+        }
+    }
+}
 ```
-
-**What it does:**
-Would be a reader that handles both deep and flat samples in a unified way.
-
-**Why it exists:**
-Currently there's `FlatSamplesReader` but no unified reader. This would allow reading any sample type without knowing in advance if it's deep or flat.
-
-**Related:** `DeepAndFlatSamples` type doesn't exist yet.
-
-**Recommendation: DEFER**
-- Deep data support is still incomplete
-- Would need `DeepAndFlatSamples` enum first
-- Low priority until deep data is fully supported
-
-**Action:** Keep as placeholder for future deep data unification.
 
 ---
 
@@ -452,7 +468,7 @@ pub(crate) mod validate_results { ... }
 | 5 | ordered_block_indices | Unfinished | Medium | Complete |
 | 6 | TryFrom<&str> | Blocked | Low | Keep + document |
 | 7 | pixel_section_indices | Unfinished | **HIGH** | Complete - fixes subsampling |
-| 8 | AnySamplesReader | Placeholder | Low | Defer |
+| 8 | AnySamplesReader | ✅ Completed | - | Implemented 2026-01-06 |
 | 9 | specific_resolution_level | ✅ Completed | - | Implemented 2026-01-06 |
 | 10 | all_valid_layers | ✅ Completed | - | Implemented 2026-01-06 |
 | 11 | validate_results | Test leak | **HIGH** | Fix - add #[cfg(test)] |
@@ -476,13 +492,13 @@ pub(crate) mod validate_results { ... }
 ### Long-term (Feature completion)
 7. ~~Implement `specific_resolution_level` (item 9)~~ ✅ DONE
 8. ~~Implement `all_valid_layers` (item 10)~~ ✅ DONE
-9. Design solution for `lines_mut` (item 2)
+9. ~~Implement `AnySamplesReader` (item 8)~~ ✅ DONE
+10. Design solution for `lines_mut` (item 2)
 
 ### Defer indefinitely
-10. `AnySamplesReader` - wait for deep data completion
 11. `TryFrom<&str>` - keep current API
 
 ---
 
 *Analysis completed: 2026-01-05*
-*Updated: 2026-01-06 - Items 9 and 10 implemented*
+*Updated: 2026-01-06 - Items 8, 9 and 10 implemented*
