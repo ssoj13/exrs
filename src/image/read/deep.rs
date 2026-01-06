@@ -92,7 +92,12 @@ use std::io::{BufReader, Read, Seek};
 use std::path::Path;
 
 use crate::block::chunk::CompressedBlock;
-use crate::block::deep::{decompress_deep_scanline_block, decompress_deep_tile_block};
+use crate::block::deep::{
+    decompress_deep_scanline_block, decompress_deep_tile_block,
+    SequentialDeepBlockDecompressor,
+};
+#[cfg(feature = "rayon")]
+use crate::block::deep::ParallelDeepBlockDecompressor;
 use crate::block::reader::Reader;
 use crate::error::{Error, Result};
 use crate::image::deep::DeepSamples;
@@ -280,7 +285,7 @@ impl ReadDeepImage<FirstLayer> {
             .ok_or_else(|| Error::invalid("no deep layer found"))?;
 
         let image_attrs = reader.headers()[layer_index].shared_attributes.clone();
-        let layer = read_deep_layer_internal(reader, layer_index, self.pedantic)?;
+        let layer = read_deep_layer_internal(reader, layer_index, self.pedantic, self._parallel)?;
 
         Ok(Image {
             attributes: image_attrs,
@@ -326,7 +331,7 @@ impl ReadDeepImage<AllLayers> {
         // For now, only support single deep layer in all_layers mode
         // to avoid re-reading the file multiple times
         if deep_indices.len() == 1 {
-            let layer = read_deep_layer_internal(reader, deep_indices[0], self.pedantic)?;
+            let layer = read_deep_layer_internal(reader, deep_indices[0], self.pedantic, self._parallel)?;
             let mut layers = SmallVec::new();
             layers.push(layer);
 
@@ -430,6 +435,7 @@ fn read_deep_layer_internal<R: Read + Seek>(
     reader: Reader<R>,
     layer_index: usize,
     pedantic: bool,
+    parallel: bool,
 ) -> Result<Layer<AnyChannels<DeepSamples>>> {
     let meta = reader.meta_data().clone();
     let header = &meta.headers[layer_index];
@@ -438,61 +444,71 @@ fn read_deep_layer_internal<R: Read + Seek>(
 
     let chunks_reader = reader.all_chunks(pedantic)?;
 
-    // Collect and decompress deep blocks for this layer
-    let mut blocks: Vec<(usize, DeepSamples)> = Vec::new();
-    for chunk_result in chunks_reader {
-        let chunk = chunk_result?;
-
-        if chunk.layer_index != layer_index {
-            continue;
+    // Collect blocks using parallel or sequential decompression
+    let blocks = if parallel {
+        #[cfg(feature = "rayon")]
+        {
+            decompress_blocks_parallel(chunks_reader, layer_index, pedantic)?
         }
-
-        let block_header = &meta.headers[chunk.layer_index];
-
-        match chunk.compressed_block {
-            CompressedBlock::DeepScanLine(ref deep_block) => {
-                let y = deep_block.y_coordinate as usize;
-                // Use scan_lines_per_block directly - the decompression handles partial blocks internally
-                let block_height = header.compression.scan_lines_per_block();
-
-                let samples = decompress_deep_scanline_block(
-                    deep_block,
-                    block_header.compression,
-                    &block_header.channels,
-                    width,
-                    block_height,
-                    pedantic,
-                )?;
-
-                blocks.push((y, samples));
-            }
-            CompressedBlock::DeepTile(ref deep_block) => {
-                let tile_size = match header.blocks {
-                    BlockDescription::Tiles(desc) => desc.tile_size,
-                    _ => return Err(Error::invalid("deep tile in scanline image")),
-                };
-
-                let samples = decompress_deep_tile_block(
-                    deep_block,
-                    block_header.compression,
-                    &block_header.channels,
-                    tile_size.width(),
-                    tile_size.height(),
-                    pedantic,
-                )?;
-
-                let y = deep_block.coordinates.tile_index.y() * tile_size.height();
-                blocks.push((y, samples));
-            }
-            _ => {} // Skip non-deep blocks
+        #[cfg(not(feature = "rayon"))]
+        {
+            decompress_blocks_sequential(chunks_reader, layer_index, pedantic)?
         }
-    }
+    } else {
+        decompress_blocks_sequential(chunks_reader, layer_index, pedantic)?
+    };
 
     // Sort by y coordinate and merge
+    let mut blocks = blocks;
     blocks.sort_by_key(|(y, _)| *y);
     let merged = merge_deep_blocks(blocks, width, height)?;
 
     Ok(build_deep_layer(&meta.headers[layer_index], merged))
+}
+
+/// Decompress blocks using parallel decompression (when rayon feature is enabled).
+#[cfg(feature = "rayon")]
+fn decompress_blocks_parallel<R: crate::block::reader::ChunksReader>(
+    chunks: R,
+    layer_index: usize,
+    pedantic: bool,
+) -> Result<Vec<(usize, DeepSamples)>> {
+    let decompressor = match ParallelDeepBlockDecompressor::new(chunks, pedantic) {
+        Ok(d) => d,
+        Err(chunks) => {
+            // Fall back to sequential if parallel not beneficial (e.g., uncompressed data)
+            return decompress_blocks_sequential(chunks, layer_index, pedantic);
+        }
+    };
+
+    let mut blocks = Vec::new();
+    for block_result in decompressor {
+        let block = block_result?;
+        if block.layer_index != layer_index {
+            continue;
+        }
+        blocks.push((block.y_coordinate as usize, block.samples));
+    }
+    Ok(blocks)
+}
+
+/// Decompress blocks sequentially (fallback or when rayon disabled).
+fn decompress_blocks_sequential<R: crate::block::reader::ChunksReader>(
+    chunks: R,
+    layer_index: usize,
+    pedantic: bool,
+) -> Result<Vec<(usize, DeepSamples)>> {
+    let decompressor = SequentialDeepBlockDecompressor::new(chunks, pedantic);
+
+    let mut blocks = Vec::new();
+    for block_result in decompressor {
+        let block = block_result?;
+        if block.layer_index != layer_index {
+            continue;
+        }
+        blocks.push((block.y_coordinate as usize, block.samples));
+    }
+    Ok(blocks)
 }
 
 /// Build a Layer from header and DeepSamples.

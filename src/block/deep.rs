@@ -389,6 +389,330 @@ pub fn compress_deep_tile_block(
     })
 }
 
+// ============================================================================
+// Parallel Deep Block Decompression
+// ============================================================================
+
+/// A decompressed deep block ready for assembly into `DeepImage`.
+///
+/// This is the deep data equivalent of [`UncompressedBlock`](super::UncompressedBlock),
+/// produced by parallel decompression.
+#[derive(Debug, Clone)]
+pub struct DeepUncompressedBlock {
+    /// Layer index this block belongs to.
+    pub layer_index: usize,
+
+    /// Y coordinate for scanline blocks, or tile coordinates for tiled.
+    pub y_coordinate: i32,
+
+    /// The decompressed deep samples.
+    pub samples: DeepSamples,
+}
+
+/// # Architectural Design Notes: Parallel Deep Data Processing
+///
+/// When implementing parallel deep block decompression, several approaches were considered.
+/// This documents the trade-offs to aid future maintenance.
+///
+/// ## Comparison of Approaches
+///
+/// | Approach | Breaking Changes | Complexity | Code Reuse |
+/// |----------|------------------|------------|------------|
+/// | A. Extend `UncompressedBlock` | High - affects all read code | Medium | Maximum |
+/// | **B. Separate `ParallelDeepBlockDecompressor`** | **None** | **Medium** | **Moderate** |
+/// | C. Generic trait `ParallelDecompressor<T>` | Low | High | Maximum |
+/// | D. Simple `par_iter` in high-level | None | Low | Minimal |
+///
+/// ## Option A: Extend UncompressedBlock (Rejected)
+///
+/// Add `DeepSamples` variant to existing `UncompressedBlock`:
+/// ```ignore
+/// pub enum UncompressedBlock {
+///     ScanLine { ... },
+///     Tile { ... },
+///     DeepScanLine { y: i32, samples: DeepSamples },  // NEW
+///     DeepTile { coords: TileCoordinates, samples: DeepSamples },  // NEW
+/// }
+/// ```
+/// **Pros:** Maximum code reuse, single parallel decompressor.
+/// **Cons:** Breaking change to public API, adds deep handling to all consumers.
+///
+/// ## Option B: Separate ParallelDeepBlockDecompressor (Chosen)
+///
+/// Create dedicated `ParallelDeepBlockDecompressor` following existing pattern:
+/// ```ignore
+/// pub struct ParallelDeepBlockDecompressor<R: ChunksReader> { ... }
+/// impl Iterator for ParallelDeepBlockDecompressor<R> {
+///     type Item = Result<DeepUncompressedBlock>;
+/// }
+/// ```
+/// **Pros:** No breaking changes, clear separation, follows established pattern.
+/// **Cons:** Some code duplication with `ParallelBlockDecompressor`.
+///
+/// ## Option C: Generic Trait (Rejected)
+///
+/// Abstract over block type with trait:
+/// ```ignore
+/// trait DecompressibleBlock: Send + 'static {
+///     fn decompress(chunk: Chunk, meta: &MetaData) -> Result<Self>;
+/// }
+/// struct ParallelDecompressor<R, B: DecompressibleBlock> { ... }
+/// ```
+/// **Pros:** Maximum flexibility and reuse.
+/// **Cons:** Over-engineering for two use cases, complex trait bounds.
+///
+/// ## Option D: Simple par_iter (Rejected)
+///
+/// Just use rayon's `par_iter` at high level:
+/// ```ignore
+/// let blocks: Vec<_> = chunks.par_iter()
+///     .map(|c| decompress_deep_block(c))
+///     .collect()?;
+/// ```
+/// **Pros:** Simplest implementation.
+/// **Cons:** No streaming, high memory for large files, doesn't follow existing pattern.
+///
+/// ## Implementation Decision
+///
+/// Option B was chosen because:
+/// 1. **API stability** - No changes to existing `UncompressedBlock` consumers
+/// 2. **Pattern consistency** - Mirrors `ParallelBlockDecompressor` exactly
+/// 3. **Clear ownership** - Deep-specific code stays in `block::deep`
+/// 4. **Streaming** - Supports memory-efficient block-by-block processing
+#[cfg(feature = "rayon")]
+#[derive(Debug)]
+pub struct ParallelDeepBlockDecompressor<R: super::reader::ChunksReader> {
+    remaining_chunks: R,
+    sender: std::sync::mpsc::Sender<Result<DeepUncompressedBlock>>,
+    receiver: std::sync::mpsc::Receiver<Result<DeepUncompressedBlock>>,
+    currently_decompressing_count: usize,
+    max_threads: usize,
+    shared_meta_data_ref: std::sync::Arc<crate::meta::MetaData>,
+    pedantic: bool,
+    pool: rayon_core::ThreadPool,
+}
+
+#[cfg(feature = "rayon")]
+impl<R: super::reader::ChunksReader> ParallelDeepBlockDecompressor<R> {
+    /// Create a new parallel deep block decompressor.
+    ///
+    /// Returns `Err(chunks)` if parallel decompression is not beneficial
+    /// (e.g., all data is uncompressed).
+    pub fn new(chunks: R, pedantic: bool) -> std::result::Result<Self, R> {
+        Self::new_with_thread_pool(chunks, pedantic, || {
+            rayon_core::ThreadPoolBuilder::new()
+                .thread_name(|index| format!("Deep Block Decompressor #{}", index))
+                .build()
+        })
+    }
+
+    /// Create with a custom thread pool builder.
+    pub fn new_with_thread_pool<CreatePool>(
+        chunks: R,
+        pedantic: bool,
+        try_create_thread_pool: CreatePool,
+    ) -> std::result::Result<Self, R>
+    where
+        CreatePool:
+            FnOnce()
+                -> std::result::Result<rayon_core::ThreadPool, rayon_core::ThreadPoolBuildError>,
+    {
+        use crate::compression::Compression;
+
+        // Check if all layers are uncompressed - no benefit from parallelism
+        let is_entirely_uncompressed = chunks
+            .meta_data()
+            .headers
+            .iter()
+            .all(|head| head.compression == Compression::Uncompressed);
+
+        if is_entirely_uncompressed {
+            return Err(chunks);
+        }
+
+        let pool = match try_create_thread_pool() {
+            Ok(pool) => pool,
+            Err(_) => return Err(chunks),
+        };
+
+        let max_threads = pool.current_num_threads().max(1).min(chunks.len()) + 2;
+        let (send, recv) = std::sync::mpsc::channel();
+
+        Ok(Self {
+            shared_meta_data_ref: std::sync::Arc::new(chunks.meta_data().clone()),
+            currently_decompressing_count: 0,
+            remaining_chunks: chunks,
+            sender: send,
+            receiver: recv,
+            pedantic,
+            max_threads,
+            pool,
+        })
+    }
+
+    /// Decompress the next block, spawning parallel jobs as needed.
+    pub fn decompress_next_block(&mut self) -> Option<Result<DeepUncompressedBlock>> {
+        // Fill thread pool with jobs
+        while self.currently_decompressing_count < self.max_threads {
+            let chunk = self.remaining_chunks.next();
+            if let Some(chunk_result) = chunk {
+                let chunk = match chunk_result {
+                    Ok(c) => c,
+                    Err(e) => return Some(Err(e)),
+                };
+
+                let sender = self.sender.clone();
+                let meta = self.shared_meta_data_ref.clone();
+                let pedantic = self.pedantic;
+                let layer_index = chunk.layer_index;
+
+                self.currently_decompressing_count += 1;
+
+                self.pool.spawn(move || {
+                    let result = decompress_deep_chunk(&chunk.compressed_block, &meta, layer_index, pedantic);
+                    let _ = sender.send(result);
+                });
+            } else {
+                break;
+            }
+        }
+
+        if self.currently_decompressing_count > 0 {
+            let next = self
+                .receiver
+                .recv()
+                .expect("all decompressing senders hung up");
+
+            self.currently_decompressing_count -= 1;
+            Some(next)
+        } else {
+            None
+        }
+    }
+
+    /// Access the metadata.
+    pub fn meta_data(&self) -> &crate::meta::MetaData {
+        self.remaining_chunks.meta_data()
+    }
+}
+
+#[cfg(feature = "rayon")]
+impl<R: super::reader::ChunksReader> ExactSizeIterator for ParallelDeepBlockDecompressor<R> {}
+
+#[cfg(feature = "rayon")]
+impl<R: super::reader::ChunksReader> Iterator for ParallelDeepBlockDecompressor<R> {
+    type Item = Result<DeepUncompressedBlock>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.decompress_next_block()
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let remaining = self.remaining_chunks.len() + self.currently_decompressing_count;
+        (remaining, Some(remaining))
+    }
+}
+
+/// Decompress a single compressed chunk into a `DeepUncompressedBlock`.
+///
+/// Helper function used by both sequential and parallel decompression.
+fn decompress_deep_chunk(
+    compressed: &crate::block::chunk::CompressedBlock,
+    meta: &crate::meta::MetaData,
+    layer_index: usize,
+    pedantic: bool,
+) -> Result<DeepUncompressedBlock> {
+    use crate::block::chunk::CompressedBlock;
+
+    let header = &meta.headers[layer_index];
+
+    match compressed {
+        CompressedBlock::DeepScanLine(ref block) => {
+            let samples = decompress_deep_scanline_block(
+                block,
+                header.compression,
+                &header.channels,
+                header.layer_size.width(),
+                header.compression.scan_lines_per_block(),
+                pedantic,
+            )?;
+
+            Ok(DeepUncompressedBlock {
+                layer_index,
+                y_coordinate: block.y_coordinate,
+                samples,
+            })
+        }
+        CompressedBlock::DeepTile(ref block) => {
+            // For tiles, tile size comes from header
+            let tile_desc = match header.blocks {
+                crate::meta::BlockDescription::Tiles(ref tiles) => tiles,
+                _ => return Err(Error::invalid("deep tile block in non-tiled layer")),
+            };
+
+            let samples = decompress_deep_tile_block(
+                block,
+                header.compression,
+                &header.channels,
+                tile_desc.tile_size.width(),
+                tile_desc.tile_size.height(),
+                pedantic,
+            )?;
+
+            Ok(DeepUncompressedBlock {
+                layer_index,
+                y_coordinate: block.coordinates.tile_index.y() as i32,
+                samples,
+            })
+        }
+        _ => Err(Error::invalid("expected deep block, got flat block")),
+    }
+}
+
+/// Sequential deep block decompressor (fallback when rayon is disabled or unhelpful).
+#[derive(Debug)]
+pub struct SequentialDeepBlockDecompressor<R: super::reader::ChunksReader> {
+    chunks: R,
+    pedantic: bool,
+}
+
+impl<R: super::reader::ChunksReader> SequentialDeepBlockDecompressor<R> {
+    /// Create a new sequential decompressor.
+    pub fn new(chunks: R, pedantic: bool) -> Self {
+        Self { chunks, pedantic }
+    }
+
+    /// Access the metadata.
+    pub fn meta_data(&self) -> &crate::meta::MetaData {
+        self.chunks.meta_data()
+    }
+}
+
+impl<R: super::reader::ChunksReader> ExactSizeIterator for SequentialDeepBlockDecompressor<R> {}
+
+impl<R: super::reader::ChunksReader> Iterator for SequentialDeepBlockDecompressor<R> {
+    type Item = Result<DeepUncompressedBlock>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let chunk = self.chunks.next()?;
+        let chunk = match chunk {
+            Ok(c) => c,
+            Err(e) => return Some(Err(e)),
+        };
+
+        Some(decompress_deep_chunk(
+            &chunk.compressed_block,
+            self.chunks.meta_data(),
+            chunk.layer_index,
+            self.pedantic,
+        ))
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        self.chunks.size_hint()
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;
