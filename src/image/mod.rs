@@ -223,7 +223,7 @@ pub enum Levels<Samples> {
 }
 
 /// A list of resolution levels. `Samples` can currently only be `FlatSamples`.
-// or `DeepAndFlatSamples` (not yet implemented).
+// or `DeepAndFlatSamples` for unified deep/flat handling.
 pub type LevelMaps<Samples> = Vec<Samples>;
 
 /// In addition to the full resolution image,

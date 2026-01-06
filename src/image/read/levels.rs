@@ -1,4 +1,33 @@
 //! How to read a set of resolution levels.
+//!
+//! This module provides three strategies for reading resolution levels from OpenEXR images:
+//!
+//! - [`ReadLargestLevel`]: Read only the highest resolution (level 0). Most common use case.
+//! - [`ReadAllLevels`]: Read all mipmap/ripmap levels into a [`Levels`] structure.
+//! - [`ReadSpecificLevel`]: Select a specific level using a closure. Useful for LOD systems.
+//!
+//! # Level Selection Example
+//!
+//! ```ignore
+//! use exrs::prelude::*;
+//!
+//! // Read the level closest to 256x256 resolution
+//! let image = read()
+//!     .no_deep_data()
+//!     .specific_resolution_level(|levels| {
+//!         levels.iter()
+//!             .min_by_key(|info| {
+//!                 let diff_x = (info.resolution.x() as i64 - 256).abs();
+//!                 let diff_y = (info.resolution.y() as i64 - 256).abs();
+//!                 diff_x + diff_y
+//!             })
+//!             .map(|info| info.index)
+//!             .unwrap_or(Vec2(0, 0))
+//!     })
+//!     .all_channels()
+//!     .all_layers()
+//!     .from_file("texture.exr")?;
+//! ```
 
 use crate::block::chunk::TileCoordinates;
 use crate::block::lines::LineRef;
@@ -12,6 +41,7 @@ use crate::math::Vec2;
 use crate::meta::attribute::*;
 use crate::meta::header::Header;
 use crate::meta::*;
+use smallvec::SmallVec;
 
 // Note: In the resulting image, the `FlatSamples` are placed
 // directly inside the channels, without `LargestLevel<>` indirection
