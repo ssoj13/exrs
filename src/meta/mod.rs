@@ -470,7 +470,7 @@ impl MetaData {
             return Err(Error::invalid("at least one layer is required"));
         }
 
-        let deep = false; // TODO deep data
+        let deep = headers.iter().any(|h| h.deep);
         let is_multilayer = headers.len() > 1;
         let first_header_has_tiles = headers.iter().next()
             .map_or(false, |header| header.blocks.has_tiles());
@@ -489,10 +489,7 @@ impl MetaData {
         };
 
         for header in headers {
-            if header.deep { // TODO deep data (and then remove this check)
-                return Err(Error::unsupported("deep data not supported yet"));
-            }
-
+            // Deep data is now supported for reading
             header.validate(is_multilayer, &mut minimal_requirements.has_long_names, pedantic)?;
         }
 

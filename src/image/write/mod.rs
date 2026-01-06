@@ -15,6 +15,7 @@
 pub mod layers;
 pub mod samples;
 pub mod channels;
+pub mod deep;
 
 
 

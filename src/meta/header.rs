@@ -547,7 +547,25 @@ impl Header {
                 }
             },
 
-            _ => return Err(Error::unsupported("deep data not supported yet"))
+            CompressedBlock::DeepScanLine(ref block) => {
+                let size = self.compression.scan_lines_per_block() as i32;
+
+                let diff = block.y_coordinate.checked_sub(self.own_attributes.layer_position.y()).ok_or(Error::invalid("invalid header"))?;
+                let y = diff.checked_div(size).ok_or(Error::invalid("invalid header"))?;
+
+                if y < 0 {
+                    return Err(Error::invalid("deep scan block y coordinate"));
+                }
+
+                TileCoordinates {
+                    tile_index: Vec2(0, y as usize),
+                    level_index: Vec2(0, 0)
+                }
+            },
+
+            CompressedBlock::DeepTile(ref tile) => {
+                tile.coordinates
+            }
         })
     }
 
@@ -570,10 +588,22 @@ impl Header {
 
     /// Maximum byte length of an uncompressed or compressed block, used for validation.
     pub fn max_block_byte_size(&self) -> usize {
-        self.channels.bytes_per_pixel * match self.blocks {
+        let pixel_count = match self.blocks {
             BlockDescription::Tiles(tiles) => tiles.tile_size.area(),
             BlockDescription::ScanLines => self.compression.scan_lines_per_block() * self.layer_size.width()
-            // TODO What about deep data???
+        };
+
+        if self.deep {
+            // For deep data, each pixel can have multiple samples.
+            // Use max_samples_per_pixel if available, otherwise use a large default.
+            // Also add space for the sample count table (4 bytes per pixel).
+            let max_samples = self.max_samples_per_pixel.unwrap_or(1024);
+            let sample_table_size = pixel_count * 4; // i32 per pixel
+            let sample_data_size = pixel_count * max_samples * self.channels.bytes_per_pixel;
+            // Add generous headroom for edge cases
+            (sample_table_size + sample_data_size) * 2
+        } else {
+            self.channels.bytes_per_pixel * pixel_count
         }
     }
 
@@ -796,9 +826,11 @@ impl Header {
 
 
         let block_type_and_tiles = expect_is_iter(once_with(move ||{
-            let (block_type, tiles) = match self.blocks {
-                BlockDescription::ScanLines => (attribute::BlockType::ScanLine, None),
-                BlockDescription::Tiles(tiles) => (attribute::BlockType::Tile, Some(tiles))
+            let (block_type, tiles) = match (self.blocks, self.deep) {
+                (BlockDescription::ScanLines, false) => (attribute::BlockType::ScanLine, None),
+                (BlockDescription::ScanLines, true) => (attribute::BlockType::DeepScanLine, None),
+                (BlockDescription::Tiles(tiles), false) => (attribute::BlockType::Tile, Some(tiles)),
+                (BlockDescription::Tiles(tiles), true) => (attribute::BlockType::DeepTile, Some(tiles)),
             };
 
             once((BLOCK_TYPE, BlockType(block_type)))

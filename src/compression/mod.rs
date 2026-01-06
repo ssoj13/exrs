@@ -651,6 +651,360 @@ mod optimize_bytes {
 }
 
 
+/// Deep data compression/decompression functions.
+///
+/// # Overview
+///
+/// Deep data uses the same compression algorithms as flat data (ZIP, RLE, etc.),
+/// but with two distinct data sections that are compressed independently:
+///
+/// 1. **Sample count table**: Cumulative sample counts per scanline (as `i32`)
+/// 2. **Sample data**: Actual channel values (f16/f32/u32 as raw bytes)
+///
+/// # Byte Ordering Pipeline
+///
+/// Both sections use the same optimization for better compression:
+///
+/// ```text
+/// Compress:   native → LE bytes → separate → predict → compress
+/// Decompress: compress → unpredict → reorder → LE bytes → native
+/// ```
+///
+/// - **separate**: Splits bytes by significance (all high bytes, then all low bytes)
+/// - **predict**: Stores differences between consecutive values
+///
+/// This preprocessing significantly improves compression ratios because similar
+/// bytes (like high bytes of f16 values) are grouped together.
+///
+/// # Sample Table Format
+///
+/// The sample table stores per-line cumulative counts as `i32`:
+/// - Values are signed to detect corruption (negative counts are invalid)
+/// - Cumulative within each line, restarting at 0 for each new line
+/// - Length = width × height × 4 bytes
+///
+/// # Sample Data Format
+///
+/// Channel values are interleaved per-pixel, each channel's samples together:
+/// ```text
+/// Pixel 0: [R_samples][G_samples][B_samples][A_samples]
+/// Pixel 1: [R_samples][G_samples][B_samples][A_samples]
+/// ...
+/// ```
+///
+/// Each sample is stored in little-endian format.
+///
+/// # Supported Compressions
+///
+/// - `Uncompressed` - No compression, raw LE bytes
+/// - `RLE` - Run-length encoding
+/// - `ZIP1` - zlib compression (single scanline blocks)
+///
+/// Other compressions (PIZ, PXR24, etc.) are not typically used with deep data.
+pub mod deep {
+    use super::*;
+    use super::optimize_bytes::*;
+
+    /// Decompress deep sample count table from file bytes to native `i32` array.
+    ///
+    /// # Pipeline
+    ///
+    /// 1. Decompress (RLE/ZIP/none)
+    /// 2. `differences_to_samples()` - reverse prediction
+    /// 3. `interleave_byte_blocks()` - reverse byte separation
+    /// 4. Convert little-endian to native `i32`
+    ///
+    /// # Returns
+    ///
+    /// Vector of cumulative sample counts, length = width × height.
+    /// Each line's counts restart from 0 (per OpenEXR spec).
+    pub fn decompress_sample_table(
+        compression: Compression,
+        compressed: &[u8],
+        width: usize,
+        height: usize,
+        pedantic: bool,
+    ) -> Result<Vec<i32>> {
+        let pixel_count = width * height;
+        let expected_bytes = pixel_count * std::mem::size_of::<i32>();
+
+        // If uncompressed (size matches), just convert endianness
+        if compressed.len() == expected_bytes {
+            return convert_sample_table_le_to_native(compressed);
+        }
+
+        // Decompress based on compression type
+        let mut decompressed = match compression {
+            Compression::Uncompressed => {
+                // Already checked above, but for safety:
+                return convert_sample_table_le_to_native(compressed);
+            }
+            Compression::RLE => {
+                rle::decompress_rle_raw(compressed, expected_bytes, pedantic)?
+            }
+            Compression::ZIP1 => {
+                zip::decompress_zip_raw(compressed, expected_bytes)?
+            }
+            _ => return Err(Error::unsupported(format!(
+                "compression {} not supported for deep data", compression
+            ))),
+        };
+
+        // Apply unpredict and reorder (same as flat data)
+        differences_to_samples(&mut decompressed);
+        interleave_byte_blocks(&mut decompressed);
+
+        // Convert from LE i32 to native
+        convert_sample_table_le_to_native(&decompressed)
+    }
+
+    /// Compress deep sample count table.
+    /// Handles: native i32 to LE → separate + predict → RLE/ZIP compress
+    pub fn compress_sample_table(
+        compression: Compression,
+        sample_counts: &[i32],
+    ) -> Result<Vec<u8>> {
+        // Convert native i32 to LE bytes
+        let mut data_le = sample_table_native_to_le(sample_counts);
+        let raw_size = data_le.len();
+
+        if compression == Compression::Uncompressed {
+            return Ok(data_le);
+        }
+
+        // Apply separate and predict (same as flat data)
+        separate_bytes_fragments(&mut data_le);
+        samples_to_differences(&mut data_le);
+
+        // Compress based on type
+        let compressed = match compression {
+            Compression::RLE => rle::compress_rle_raw(&data_le),
+            Compression::ZIP1 => zip::compress_zip_raw(&data_le),
+            _ => return Err(Error::unsupported(format!(
+                "compression {} not supported for deep data", compression
+            ))),
+        };
+
+        // Return compressed only if smaller, otherwise raw LE data
+        if compressed.len() < raw_size {
+            Ok(compressed)
+        } else {
+            // Return uncompressed LE data
+            Ok(sample_table_native_to_le(sample_counts))
+        }
+    }
+
+    /// Decompress deep sample data.
+    /// Uses the same pipeline as flat data (reorder+predict).
+    pub fn decompress_sample_data(
+        compression: Compression,
+        compressed: &[u8],
+        expected_bytes: usize,
+        pedantic: bool,
+    ) -> Result<Vec<u8>> {
+        // If uncompressed (size matches), return as-is
+        if compressed.len() == expected_bytes {
+            return Ok(compressed.to_vec());
+        }
+
+        // Decompress based on compression type
+        let mut decompressed = match compression {
+            Compression::Uncompressed => {
+                return Ok(compressed.to_vec());
+            }
+            Compression::RLE => {
+                rle::decompress_rle_raw(compressed, expected_bytes, pedantic)?
+            }
+            Compression::ZIP1 => {
+                zip::decompress_zip_raw(compressed, expected_bytes)?
+            }
+            _ => return Err(Error::unsupported(format!(
+                "compression {} not supported for deep data", compression
+            ))),
+        };
+
+        // Apply unpredict and reorder (same as flat data)
+        differences_to_samples(&mut decompressed);
+        interleave_byte_blocks(&mut decompressed);
+
+        Ok(decompressed)
+    }
+
+    /// Compress deep sample data.
+    pub fn compress_sample_data(
+        compression: Compression,
+        data: &[u8],
+    ) -> Result<Vec<u8>> {
+        let raw_size = data.len();
+
+        if compression == Compression::Uncompressed {
+            return Ok(data.to_vec());
+        }
+
+        // Apply separate and predict (same as flat data)
+        let mut data_copy = data.to_vec();
+        separate_bytes_fragments(&mut data_copy);
+        samples_to_differences(&mut data_copy);
+
+        // Compress based on type
+        let compressed = match compression {
+            Compression::RLE => rle::compress_rle_raw(&data_copy),
+            Compression::ZIP1 => zip::compress_zip_raw(&data_copy),
+            _ => return Err(Error::unsupported(format!(
+                "compression {} not supported for deep data", compression
+            ))),
+        };
+
+        // Return compressed only if smaller
+        if compressed.len() < raw_size {
+            Ok(compressed)
+        } else {
+            Ok(data.to_vec())
+        }
+    }
+
+    /// Convert sample count table from LE bytes to native i32.
+    fn convert_sample_table_le_to_native(bytes: &[u8]) -> Result<Vec<i32>> {
+        if bytes.len() % 4 != 0 {
+            return Err(Error::invalid("sample count table size not multiple of 4"));
+        }
+
+        let count = bytes.len() / 4;
+        let mut result = Vec::with_capacity(count);
+
+        for chunk in bytes.chunks_exact(4) {
+            let value = i32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]);
+            result.push(value);
+        }
+
+        Ok(result)
+    }
+
+    /// Convert sample count table from native i32 to LE bytes.
+    fn sample_table_native_to_le(counts: &[i32]) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(counts.len() * 4);
+        for &count in counts {
+            bytes.extend_from_slice(&count.to_le_bytes());
+        }
+        bytes
+    }
+
+    /// Validate sample count table (must be monotonically non-decreasing).
+    pub fn validate_sample_table(cumulative_counts: &[i32]) -> Result<()> {
+        let mut prev = 0i32;
+        for (i, &count) in cumulative_counts.iter().enumerate() {
+            if count < prev {
+                return Err(Error::invalid(format!(
+                    "sample count table not monotonic at index {}: {} < {}",
+                    i, count, prev
+                )));
+            }
+            if count < 0 {
+                return Err(Error::invalid(format!(
+                    "negative sample count at index {}: {}",
+                    i, count
+                )));
+            }
+            prev = count;
+        }
+        Ok(())
+    }
+
+    /// Get individual sample counts from cumulative table.
+    pub fn cumulative_to_individual(cumulative: &[i32]) -> Vec<u32> {
+        let mut individual = Vec::with_capacity(cumulative.len());
+        let mut prev = 0i32;
+        for &cum in cumulative {
+            individual.push((cum - prev) as u32);
+            prev = cum;
+        }
+        individual
+    }
+
+    /// Convert individual sample counts to cumulative.
+    pub fn individual_to_cumulative(individual: &[u32]) -> Vec<i32> {
+        let mut cumulative = Vec::with_capacity(individual.len());
+        let mut sum = 0i32;
+        for &count in individual {
+            sum += count as i32;
+            cumulative.push(sum);
+        }
+        cumulative
+    }
+
+    #[cfg(test)]
+    mod test {
+        use super::*;
+
+        #[test]
+        fn roundtrip_sample_table_rle() {
+            let counts: Vec<i32> = vec![0, 2, 5, 5, 8, 10, 15, 15, 15, 20];
+            let compressed = compress_sample_table(Compression::RLE, &counts).unwrap();
+            let decompressed = decompress_sample_table(
+                Compression::RLE, &compressed, 5, 2, true
+            ).unwrap();
+            assert_eq!(counts, decompressed);
+        }
+
+        #[test]
+        fn roundtrip_sample_table_zip() {
+            let counts: Vec<i32> = vec![0, 2, 5, 5, 8, 10, 15, 15, 15, 20];
+            let compressed = compress_sample_table(Compression::ZIP1, &counts).unwrap();
+            let decompressed = decompress_sample_table(
+                Compression::ZIP1, &compressed, 5, 2, true
+            ).unwrap();
+            assert_eq!(counts, decompressed);
+        }
+
+        #[test]
+        fn roundtrip_sample_table_uncompressed() {
+            let counts: Vec<i32> = vec![1, 3, 6, 10];
+            let compressed = compress_sample_table(Compression::Uncompressed, &counts).unwrap();
+            let decompressed = decompress_sample_table(
+                Compression::Uncompressed, &compressed, 2, 2, true
+            ).unwrap();
+            assert_eq!(counts, decompressed);
+        }
+
+        #[test]
+        fn roundtrip_sample_data_rle() {
+            let data: Vec<u8> = vec![1, 2, 3, 4, 5, 5, 5, 5, 6, 7, 8, 9];
+            let compressed = compress_sample_data(Compression::RLE, &data).unwrap();
+            let decompressed = decompress_sample_data(
+                Compression::RLE, &compressed, data.len(), true
+            ).unwrap();
+            assert_eq!(data, decompressed);
+        }
+
+        #[test]
+        fn validate_sample_table_valid() {
+            let counts = vec![0, 1, 3, 5, 5, 10];
+            assert!(validate_sample_table(&counts).is_ok());
+        }
+
+        #[test]
+        fn validate_sample_table_invalid_decreasing() {
+            let counts = vec![0, 5, 3, 10]; // 3 < 5 - not monotonic
+            assert!(validate_sample_table(&counts).is_err());
+        }
+
+        #[test]
+        fn validate_sample_table_invalid_negative() {
+            let counts = vec![0, -1, 3];
+            assert!(validate_sample_table(&counts).is_err());
+        }
+
+        #[test]
+        fn cumulative_individual_roundtrip() {
+            let individual: Vec<u32> = vec![0, 2, 3, 0, 5, 1];
+            let cumulative = individual_to_cumulative(&individual);
+            assert_eq!(cumulative, vec![0, 2, 5, 5, 10, 11]);
+            let back = cumulative_to_individual(&cumulative);
+            assert_eq!(individual, back);
+        }
+    }
+}
+
 #[cfg(test)]
 mod test {
     use super::*;

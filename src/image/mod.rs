@@ -28,6 +28,7 @@ pub mod write;
 pub mod crop;
 pub mod pixel_vec;
 pub mod recursive;
+pub mod deep;
 // pub mod channel_groups;
 
 

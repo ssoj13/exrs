@@ -14,6 +14,7 @@ pub mod reader;
 pub mod lines;
 pub mod samples;
 pub mod chunk;
+pub mod deep;
 
 
 use std::io::{Read, Seek, Write};

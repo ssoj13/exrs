@@ -48,6 +48,7 @@ pub mod any_channels;
 pub mod levels;
 pub mod samples;
 pub mod specific_channels;
+pub mod deep;
 
 use crate::error::{Result};
 use crate::image::read::samples::{ReadFlatSamples};
@@ -195,6 +196,21 @@ impl ReadBuilder {
     /// Specify to handle only one sample per channel, disabling "deep data".
     // TODO not panic but skip deep layers!
     pub fn no_deep_data(self) -> ReadFlatSamples { ReadFlatSamples }
+    
+    /// Specify to read deep data (variable samples per pixel).
+    /// Deep data requires a different reading pipeline.
+    /// 
+    /// # Example
+    /// ```no_run
+    /// use exr::prelude::*;
+    /// let image = read()
+    ///     .deep_data()
+    ///     .all_channels()
+    ///     .first_valid_layer()
+    ///     .all_attributes()
+    ///     .from_file("deep.exr").unwrap();
+    /// ```
+    pub fn deep_data(self) -> deep::ReadDeepSamples { deep::ReadDeepSamples }
 
     // pub fn any_resolution_levels() -> ReadBuilder<> {}
 
