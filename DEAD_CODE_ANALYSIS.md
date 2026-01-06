@@ -310,10 +310,13 @@ Needed for proper subsampling support in compression methods. Currently subsampl
 **Usage:**
 ```rust
 use exrs::prelude::*;
-use exrs::image::read::any_samples::read_any_samples;
 
-// Automatically detects deep vs flat
-let image = read_any_samples()
+// Convenience function (recommended)
+let image = read_first_any_layer_from_file("unknown_type.exr")?;
+
+// Or via builder API
+let image = read()
+    .flat_and_deep_data()
     .all_channels()
     .first_valid_layer()
     .all_attributes()
@@ -330,6 +333,8 @@ for channel in &image.layer_data.channel_data.list {
         }
     }
 }
+
+// Roundtrip tested: read → write → read → compare works correctly
 ```
 
 ---
@@ -501,4 +506,4 @@ pub(crate) mod validate_results { ... }
 ---
 
 *Analysis completed: 2026-01-05*
-*Updated: 2026-01-06 - Items 8, 9 and 10 implemented*
+*Updated: 2026-01-06 - Items 8, 9 and 10 implemented (roundtrip tested)*

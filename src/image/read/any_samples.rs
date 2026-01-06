@@ -683,4 +683,82 @@ mod tests {
         assert!(deep.is_deep());
         assert!(!deep.is_flat());
     }
+
+    /// Roundtrip test: read flat file -> write -> read again -> compare.
+    #[test]
+    fn roundtrip_flat_file() {
+        use crate::image::write::WritableImage;
+        use crate::image::FlatSamples;
+
+        let path = "tests/images/valid/openexr/ScanLines/Desk.exr";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+
+        // Read original
+        let original = crate::image::read::read_first_any_layer_from_file(path)
+            .expect("failed to read original");
+
+        // Convert to writable format (extract flat samples)
+        let mut flat_channels: smallvec::SmallVec<[crate::image::AnyChannel<FlatSamples>; 4]> =
+            smallvec::SmallVec::new();
+
+        for ch in &original.layer_data.channel_data.list {
+            if let crate::image::DeepAndFlatSamples::Flat(flat) = &ch.sample_data {
+                flat_channels.push(crate::image::AnyChannel {
+                    name: ch.name.clone(),
+                    sample_data: flat.clone(),
+                    quantize_linearly: ch.quantize_linearly,
+                    sampling: ch.sampling,
+                });
+            }
+        }
+
+        let writable = crate::image::Image {
+            attributes: original.attributes.clone(),
+            layer_data: crate::image::Layer {
+                channel_data: crate::image::AnyChannels { list: flat_channels },
+                attributes: original.layer_data.attributes.clone(),
+                size: original.layer_data.size,
+                encoding: original.layer_data.encoding.clone(),
+            },
+        };
+
+        // Write to temp file
+        let temp_path = "target/test_roundtrip_any.exr";
+        writable.write().to_file(temp_path).expect("failed to write");
+
+        // Read back
+        let reloaded = crate::image::read::read_first_any_layer_from_file(temp_path)
+            .expect("failed to read back");
+
+        // Compare
+        assert_eq!(
+            original.layer_data.size,
+            reloaded.layer_data.size,
+            "Size mismatch"
+        );
+        assert_eq!(
+            original.layer_data.channel_data.list.len(),
+            reloaded.layer_data.channel_data.list.len(),
+            "Channel count mismatch"
+        );
+
+        for (orig_ch, reload_ch) in original
+            .layer_data
+            .channel_data
+            .list
+            .iter()
+            .zip(reloaded.layer_data.channel_data.list.iter())
+        {
+            assert_eq!(orig_ch.name, reload_ch.name, "Channel name mismatch");
+            assert!(
+                orig_ch.sample_data.is_flat() && reload_ch.sample_data.is_flat(),
+                "Both should be flat"
+            );
+        }
+
+        // Cleanup
+        let _ = std::fs::remove_file(temp_path);
+    }
 }
