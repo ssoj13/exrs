@@ -98,11 +98,9 @@ impl ReadFlatSamples {
     }
 }
 
-// Re-export unified deep/flat reader from any_samples module.
-// This provides seamless API for reading files without knowing if they're deep or flat.
-pub use crate::image::read::any_samples::{
-    read_any_samples, AnyImage, AnyLayersImage, ReadAnySamples,
-};
+// Unified deep/flat reader is available via `read().flat_and_deep_data()...`
+// or the convenience function `read_first_any_layer_from_file()`.
+// For direct access to types, use `crate::image::read::any_samples`.
 
 /// Processes pixel blocks from a file and accumulates them into a grid of samples, for example "Red" or "Alpha".
 #[derive(Debug, Clone, PartialEq)]

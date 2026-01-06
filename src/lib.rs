@@ -63,7 +63,6 @@ pub mod prelude {
     pub use traits::*;
 
     pub use crate::image::read::{
-        any_samples::{read_any_samples, AnyImage, AnyLayersImage, ReadAnySamples},
         levels::LevelInfo,
         read_all_data_from_file, read_all_flat_layers_from_file,
         read_all_rgba_layers_from_file, read_first_any_layer_from_file,
