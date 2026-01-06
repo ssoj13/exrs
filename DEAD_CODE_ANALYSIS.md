@@ -318,56 +318,85 @@ Currently there's `FlatSamplesReader` but no unified reader. This would allow re
 
 ---
 
-## 9. specific_resolution_level() - UNFINISHED FEATURE
+## 9. specific_resolution_level() - ✅ COMPLETED
 
-**Location:** `src/image/read/samples.rs:35`
+**Location:** `src/image/read/samples.rs` and `src/image/read/levels.rs`
 
+**Status:** IMPLEMENTED (2026-01-06)
+
+**Implementation:**
+- Added `LevelInfo` struct to describe available resolution levels
+- Added `ReadSpecificLevel<S, F>` struct for level selection
+- Added `SpecificLevelReader` to filter and read selected level
+- Added `specific_resolution_level()` method to `ReadFlatSamples`
+- Added comprehensive tests (10 unit tests)
+- Added rustdoc documentation with examples
+
+**Usage:**
 ```rust
-// TODO pub fn specific_resolution_level<F: Fn(&[Vec2<usize>])->usize >(self, select_level: F) -> ReadLevelBy<Self> { ReadAllLevels { read_samples: self } }
+use exrs::prelude::*;
+
+// Read mipmap level 1 (half resolution)
+let image = read()
+    .no_deep_data()
+    .specific_resolution_level(|_| Vec2(1, 1))
+    .all_channels()
+    .first_valid_layer()
+    .from_file("mipmapped.exr")?;
+
+// Read level closest to 512x512
+let image = read()
+    .no_deep_data()
+    .specific_resolution_level(|levels| {
+        levels.iter()
+            .min_by_key(|info| {
+                let dx = (info.resolution.x() as i64 - 512).abs();
+                let dy = (info.resolution.y() as i64 - 512).abs();
+                dx + dy
+            })
+            .map(|info| info.index)
+            .unwrap_or(Vec2(0, 0))
+    })
+    .all_channels()
+    .first_valid_layer()
+    .from_file("mipmapped.exr")?;
 ```
-
-**What it does:**
-Would allow selecting a specific mip/rip map level by a user-provided function, instead of always getting largest or all levels.
-
-**Why it exists:**
-Currently you can only:
-- `largest_resolution_level()` - get highest res
-- `all_resolution_levels()` - get all levels
-
-This would add:
-- `specific_resolution_level(|levels| ...)` - pick one level dynamically
-
-**Recommendation: COMPLETE THIS - MEDIUM PRIORITY**
-- Useful for LOD systems where you want specific level
-- Implementation is straightforward
-- Needs `ReadLevelBy` struct (doesn't exist)
-
-**Action:** Implement when needed.
 
 ---
 
-## 10. all_valid_layers() - UNFINISHED FEATURE
+## 10. all_valid_layers() - ✅ COMPLETED
 
-**Location:** `src/image/read/layers.rs:60`
+**Location:** `src/image/read/layers.rs`
 
+**Status:** IMPLEMENTED (2026-01-06)
+
+**Implementation:**
+- Added `ReadAllValidLayers<C>` struct for reading valid layers
+- Added `AllValidLayersReader<C>` with layer index mapping
+- Added `all_valid_layers()` method to `ReadChannels` trait
+- Uses `flat_map` pattern to skip invalid layers
+- Added comprehensive tests (5 unit tests)
+- Added rustdoc documentation with examples
+
+**Usage:**
 ```rust
-// TODO pub fn all_valid_layers(self) -> ReadAllValidLayers<Self> { ReadAllValidLayers { read_channels: self } }
+use exrs::prelude::*;
+
+// Read all RGB layers, skip layers without RGB channels
+let image = read()
+    .no_deep_data()
+    .largest_resolution_level()
+    .rgb_channels(create_pixels, set_pixel)
+    .all_valid_layers()  // Won't fail if some layers lack RGB
+    .all_attributes()
+    .from_file("mixed_layers.exr")?;
+
+if image.layer_data.is_empty() {
+    println!("No RGB layers found");
+} else {
+    println!("Found {} RGB layers", image.layer_data.len());
+}
 ```
-
-**What it does:**
-Would read all layers that match requirements, skipping invalid ones, instead of:
-- `all_layers()` - read all, fail if any invalid
-- `first_valid_layer()` - read only first valid
-
-**Why it exists:**
-Sometimes you want to read what you can and skip problematic layers.
-
-**Recommendation: COMPLETE THIS - MEDIUM PRIORITY**
-- Useful for robust file reading
-- Would need `ReadAllValidLayers` struct
-- Similar to `ReadAllLayers` but with `flat_map` instead of `map`
-
-**Action:** Implement when needed.
 
 ---
 
@@ -424,8 +453,8 @@ pub(crate) mod validate_results { ... }
 | 6 | TryFrom<&str> | Blocked | Low | Keep + document |
 | 7 | pixel_section_indices | Unfinished | **HIGH** | Complete - fixes subsampling |
 | 8 | AnySamplesReader | Placeholder | Low | Defer |
-| 9 | specific_resolution_level | Unfinished | Medium | Complete when needed |
-| 10 | all_valid_layers | Unfinished | Medium | Complete when needed |
+| 9 | specific_resolution_level | ✅ Completed | - | Implemented 2026-01-06 |
+| 10 | all_valid_layers | ✅ Completed | - | Implemented 2026-01-06 |
 | 11 | validate_results | Test leak | **HIGH** | Fix - add #[cfg(test)] |
 
 ---
@@ -445,8 +474,8 @@ pub(crate) mod validate_results { ... }
 6. **Delete redundant `for_lines`** (item 3)
 
 ### Long-term (Feature completion)
-7. Implement `specific_resolution_level` (item 9)
-8. Implement `all_valid_layers` (item 10)
+7. ~~Implement `specific_resolution_level` (item 9)~~ ✅ DONE
+8. ~~Implement `all_valid_layers` (item 10)~~ ✅ DONE
 9. Design solution for `lines_mut` (item 2)
 
 ### Defer indefinitely
@@ -456,3 +485,4 @@ pub(crate) mod validate_results { ... }
 ---
 
 *Analysis completed: 2026-01-05*
+*Updated: 2026-01-06 - Items 9 and 10 implemented*

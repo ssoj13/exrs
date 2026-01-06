@@ -4,7 +4,9 @@ use crate::block::chunk::TileCoordinates;
 use crate::block::lines::LineRef;
 use crate::error::{Result, UnitResult};
 use crate::image::read::any_channels::{ReadSamples, SamplesReader};
-use crate::image::read::levels::{ReadAllLevels, ReadLargestLevel, ReadSamplesLevel};
+use crate::image::read::levels::{
+    LevelInfo, ReadAllLevels, ReadLargestLevel, ReadSamplesLevel, ReadSpecificLevel,
+};
 use crate::image::*;
 use crate::math::Vec2;
 use crate::meta::attribute::{ChannelDescription, SampleType};
@@ -32,14 +34,68 @@ impl ReadFlatSamples {
         ReadAllLevels { read_samples: self }
     }
 
-    // Future enhancement: Select a specific resolution level by user-provided function.
-    // The closure receives available level resolutions and returns the index to read.
-    // Useful for LOD systems where you want a specific mip level.
-    // Implementation requires a new `ReadSpecificLevel<S, F>` struct.
-    // See: DEAD_CODE_ANALYSIS.md item #9
-    // pub fn specific_resolution_level<F>(self, select_level: F) -> ReadSpecificLevel<Self, F>
-    // where F: Fn(&[Vec2<usize>]) -> usize
-    // { ReadSpecificLevel { read_samples: self, select_level } }
+    /// Select a specific resolution level using a user-provided closure.
+    ///
+    /// This is useful for LOD (Level of Detail) systems where you want to read
+    /// a specific mipmap level based on viewing distance, texture budget, or other criteria.
+    ///
+    /// The closure receives a slice of [`LevelInfo`] describing all available levels
+    /// (resolutions and their indices) and must return the `Vec2<usize>` index of the
+    /// desired level to read.
+    ///
+    /// # Arguments
+    ///
+    /// * `select_level` - A closure that receives available level information and returns
+    ///   the index of the level to read. For mipmaps, return `Vec2(n, n)` where `n` is
+    ///   the mip level (0 = full resolution). For ripmaps, X and Y indices can differ.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// use exrs::prelude::*;
+    ///
+    /// // Read mipmap level 1 (half resolution)
+    /// let image = read()
+    ///     .no_deep_data()
+    ///     .specific_resolution_level(|_| Vec2(1, 1))
+    ///     .all_channels()
+    ///     .first_valid_layer()
+    ///     .from_file("mipmapped.exr")?;
+    ///
+    /// // Read the level closest to 512x512
+    /// let image = read()
+    ///     .no_deep_data()
+    ///     .specific_resolution_level(|levels| {
+    ///         levels.iter()
+    ///             .min_by_key(|info| {
+    ///                 let dx = (info.resolution.x() as i64 - 512).abs();
+    ///                 let dy = (info.resolution.y() as i64 - 512).abs();
+    ///                 dx + dy
+    ///             })
+    ///             .map(|info| info.index)
+    ///             .unwrap_or(Vec2(0, 0))
+    ///     })
+    ///     .all_channels()
+    ///     .first_valid_layer()
+    ///     .from_file("mipmapped.exr")?;
+    /// ```
+    ///
+    /// # See Also
+    ///
+    /// * [`largest_resolution_level`](Self::largest_resolution_level) - Always read level 0.
+    /// * [`all_resolution_levels`](Self::all_resolution_levels) - Read all levels.
+    /// * [`LevelInfo`] - Information about each available level.
+    ///
+    /// Implements: DEAD_CODE_ANALYSIS.md item #9
+    pub fn specific_resolution_level<F>(self, select_level: F) -> ReadSpecificLevel<Self, F>
+    where
+        F: Fn(&[LevelInfo]) -> Vec2<usize>,
+    {
+        ReadSpecificLevel {
+            read_samples: self,
+            select_level,
+        }
+    }
 }
 
 // Future: AnySamplesReader for reading either deep or flat samples.

@@ -63,8 +63,9 @@ pub mod prelude {
     pub use traits::*;
 
     pub use crate::image::read::{
-        read_all_data_from_file, read_all_flat_layers_from_file, read_all_rgba_layers_from_file,
-        read_first_flat_layer_from_file, read_first_rgba_layer_from_file,
+        levels::LevelInfo, read_all_data_from_file, read_all_flat_layers_from_file,
+        read_all_rgba_layers_from_file, read_first_flat_layer_from_file,
+        read_first_rgba_layer_from_file,
     };
     pub use crate::image::write::{write_rgb_file, write_rgba_file};
 
