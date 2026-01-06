@@ -577,4 +577,110 @@ mod tests {
         fn _takes_any_image(_: AnyImage) {}
         fn _takes_any_layers_image(_: AnyLayersImage) {}
     }
+
+    /// Test reading flat file via flat_and_deep_data().
+    #[test]
+    fn read_flat_file_via_builder() {
+        let path = "tests/images/valid/openexr/ScanLines/Desk.exr";
+        if !std::path::Path::new(path).exists() {
+            return; // Skip if test file not available
+        }
+
+        let image = crate::image::read::read()
+            .flat_and_deep_data()
+            .all_channels()
+            .first_valid_layer()
+            .all_attributes()
+            .from_file(path)
+            .expect("failed to read flat file");
+
+        // Verify it's detected as flat
+        assert!(!image.layer_data.channel_data.list.is_empty());
+        for ch in &image.layer_data.channel_data.list {
+            assert!(
+                ch.sample_data.is_flat(),
+                "Expected flat samples, got deep for channel {}",
+                ch.name
+            );
+        }
+    }
+
+    /// Test reading flat file via convenience function.
+    #[test]
+    fn read_flat_file_convenience() {
+        let path = "tests/images/valid/openexr/ScanLines/Desk.exr";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+
+        let image = crate::image::read::read_first_any_layer_from_file(path)
+            .expect("failed to read flat file");
+
+        assert!(!image.layer_data.channel_data.list.is_empty());
+        assert!(image.layer_data.channel_data.list[0].sample_data.is_flat());
+    }
+
+    /// Test reading deep file via flat_and_deep_data().
+    #[test]
+    fn read_deep_file_via_builder() {
+        let path = "tests/images/valid/openexr/v2/deep_large/Teaset720p.exr";
+        if !std::path::Path::new(path).exists() {
+            return; // Skip if test file not available
+        }
+
+        let image = crate::image::read::read()
+            .flat_and_deep_data()
+            .all_channels()
+            .first_valid_layer()
+            .all_attributes()
+            .from_file(path)
+            .expect("failed to read deep file");
+
+        // Verify it's detected as deep
+        assert!(!image.layer_data.channel_data.list.is_empty());
+        // At least one channel should be deep
+        let has_deep = image
+            .layer_data
+            .channel_data
+            .list
+            .iter()
+            .any(|ch| ch.sample_data.is_deep());
+        assert!(has_deep, "Expected at least one deep channel");
+    }
+
+    /// Test reading deep file via convenience function.
+    #[test]
+    fn read_deep_file_convenience() {
+        let path = "tests/images/valid/openexr/v2/deep_large/Teaset720p.exr";
+        if !std::path::Path::new(path).exists() {
+            return;
+        }
+
+        let image = crate::image::read::read_first_any_layer_from_file(path)
+            .expect("failed to read deep file");
+
+        assert!(!image.layer_data.channel_data.list.is_empty());
+        let has_deep = image
+            .layer_data
+            .channel_data
+            .list
+            .iter()
+            .any(|ch| ch.sample_data.is_deep());
+        assert!(has_deep, "Expected deep data");
+    }
+
+    /// Test that DeepAndFlatSamples helper methods work.
+    #[test]
+    fn deep_and_flat_samples_helpers() {
+        use crate::image::DeepAndFlatSamples;
+        use crate::image::FlatSamples;
+
+        let flat = DeepAndFlatSamples::Flat(FlatSamples::F32(vec![1.0, 2.0, 3.0]));
+        assert!(flat.is_flat());
+        assert!(!flat.is_deep());
+
+        let deep = DeepAndFlatSamples::Deep(crate::image::deep::DeepSamples::new(2, 2));
+        assert!(deep.is_deep());
+        assert!(!deep.is_flat());
+    }
 }
