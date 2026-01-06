@@ -1,7 +1,7 @@
-use super::*;
 use super::optimize_bytes::*;
 use super::Error;
 use super::Result;
+use super::*;
 
 // inspired by  https://github.com/openexr/openexr/blob/master/OpenEXR/IlmImf/ImfRle.cpp
 
@@ -102,7 +102,8 @@ pub fn compress_bytes(
     rectangle: IntegerBounds,
 ) -> Result<ByteVec> {
     // see https://github.com/AcademySoftwareFoundation/openexr/blob/3bd93f85bcb74c77255f28cdbb913fdbfbb39dfe/OpenEXR/IlmImf/ImfTiledOutputFile.cpp#L750-L842
-    let mut data_le = super::convert_current_to_little_endian(uncompressed_ne, channels, rectangle)?;
+    let mut data_le =
+        super::convert_current_to_little_endian(uncompressed_ne, channels, rectangle)?;
 
     separate_bytes_fragments(&mut data_le);
     samples_to_differences(&mut data_le);

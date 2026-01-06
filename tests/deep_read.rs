@@ -1,11 +1,11 @@
 //! Integration tests for reading deep EXR files.
 
-use exr::meta::MetaData;
-use exr::block::reader::Reader;
 use exr::block::chunk::CompressedBlock;
 use exr::block::deep::decompress_deep_scanline_block;
-use std::io::BufReader;
+use exr::block::reader::Reader;
+use exr::meta::MetaData;
 use std::fs::File;
+use std::io::BufReader;
 use std::path::Path;
 
 /// Test reading metadata from a deep EXR file.
@@ -22,7 +22,10 @@ fn read_deep_metadata() {
 
     println!("Headers: {}", meta.headers.len());
     for (i, header) in meta.headers.iter().enumerate() {
-        println!("Header {}: deep={}, compression={:?}", i, header.deep, header.compression);
+        println!(
+            "Header {}: deep={}, compression={:?}",
+            i, header.deep, header.compression
+        );
         println!("  Size: {:?}", header.layer_size);
         println!("  Channels: {}", header.channels.list.len());
         for ch in &header.channels.list {
@@ -37,7 +40,10 @@ fn read_deep_metadata() {
     }
 
     // Should have at least one header with deep=true
-    assert!(meta.headers.iter().any(|h| h.deep), "Expected deep data in Balls.exr");
+    assert!(
+        meta.headers.iter().any(|h| h.deep),
+        "Expected deep data in Balls.exr"
+    );
 }
 
 /// Test reading raw deep blocks.
@@ -74,20 +80,33 @@ fn read_deep_blocks_raw() {
                     header.layer_size.width(),
                     header.compression.scan_lines_per_block(),
                     false,
-                ).unwrap();
+                )
+                .unwrap();
 
                 total_samples += samples.total_samples();
 
                 if deep_block_count == 1 {
                     println!("First deep block:");
                     println!("  y_coordinate: {}", deep_block.y_coordinate);
-                    println!("  table size: {}", deep_block.compressed_pixel_offset_table.len());
-                    println!("  data size: {}", deep_block.compressed_sample_data_le.len());
-                    println!("  decompressed size: {}", deep_block.decompressed_sample_data_size);
+                    println!(
+                        "  table size: {}",
+                        deep_block.compressed_pixel_offset_table.len()
+                    );
+                    println!(
+                        "  data size: {}",
+                        deep_block.compressed_sample_data_le.len()
+                    );
+                    println!(
+                        "  decompressed size: {}",
+                        deep_block.decompressed_sample_data_size
+                    );
                     println!("  DeepSamples:");
                     println!("    width: {}, height: {}", samples.width, samples.height);
                     println!("    total samples: {}", samples.total_samples());
-                    println!("    max samples per pixel: {}", samples.max_samples_per_pixel());
+                    println!(
+                        "    max samples per pixel: {}",
+                        samples.max_samples_per_pixel()
+                    );
                     println!("    channels: {}", samples.channels.len());
                 }
             }
@@ -143,7 +162,8 @@ fn read_all_deep_test_files() {
                     header.layer_size.width(),
                     header.compression.scan_lines_per_block(),
                     false,
-                ).unwrap();
+                )
+                .unwrap();
 
                 block_count += 1;
                 sample_count += samples.total_samples();

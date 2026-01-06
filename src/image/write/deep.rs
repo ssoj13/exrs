@@ -80,12 +80,12 @@
 //! - [`crate::image::deep`] - Core [`DeepSamples`] type
 //! - [`crate::block::deep::compress_deep_scanline_block()`] - Block compression
 
-use std::io::{Write, Seek, BufWriter};
+use std::io::{BufWriter, Seek, Write};
 use std::path::Path;
 
 use crate::block::chunk::{Chunk, CompressedBlock};
 use crate::block::deep::compress_deep_scanline_block;
-use crate::block::writer::{ChunksWriter, ChunkWriter};
+use crate::block::writer::{ChunkWriter, ChunksWriter};
 use crate::compression::Compression;
 use crate::error::UnitResult;
 use crate::image::deep::DeepSamples;
@@ -124,25 +124,31 @@ pub fn write_deep_image_to_buffered<W: Write + Seek>(
     compression: Compression,
 ) -> UnitResult {
     let layer = &image.layer_data;
-    
+
     // The read API stores ALL channels' data in the FIRST channel's DeepSamples
     let first_ch = &layer.channel_data.list[0];
     let samples = &first_ch.sample_data;
-    
+
     // Build channel list - channel data order matches list order
     let channel_list = ChannelList::new(
-        layer.channel_data.list.iter().enumerate().map(|(idx, ch)| {
-            ChannelDescription {
+        layer
+            .channel_data
+            .list
+            .iter()
+            .enumerate()
+            .map(|(idx, ch)| ChannelDescription {
                 name: ch.name.clone(),
-                sample_type: samples.channels.get(idx)
+                sample_type: samples
+                    .channels
+                    .get(idx)
                     .map(|c| c.sample_type())
                     .unwrap_or(crate::meta::attribute::SampleType::F32),
                 quantize_linearly: ch.quantize_linearly,
                 sampling: ch.sampling,
-            }
-        }).collect()
+            })
+            .collect(),
     );
-    
+
     write_deep_scanlines_to_buffered(
         write,
         samples,
@@ -186,10 +192,10 @@ fn write_deep_scanlines_to_buffered<W: Write + Seek>(
     let width = samples.width;
     let height = samples.height;
     let data_size = Vec2(width, height);
-    
+
     // Calculate max samples per pixel for header
     let max_samples = samples.max_samples_per_pixel();
-    
+
     // Build header for deep scanline data
     let header = Header {
         channels: channels.clone(),
@@ -197,19 +203,21 @@ fn write_deep_scanlines_to_buffered<W: Write + Seek>(
         blocks: BlockDescription::ScanLines,
         line_order: LineOrder::Increasing,
         layer_size: data_size,
-        shared_attributes: image_attrs.map(|a| HeaderImageAttributes {
-            pixel_aspect: a.pixel_aspect,
-            chromaticities: a.chromaticities.clone(),
-            time_code: a.time_code,
-            display_window: a.display_window,
-            other: a.other.clone(),
-        }).unwrap_or_else(|| HeaderImageAttributes {
-            pixel_aspect: 1.0,
-            chromaticities: None,
-            time_code: None,
-            display_window: IntegerBounds::new((0, 0), data_size),
-            other: Default::default(),
-        }),
+        shared_attributes: image_attrs
+            .map(|a| HeaderImageAttributes {
+                pixel_aspect: a.pixel_aspect,
+                chromaticities: a.chromaticities.clone(),
+                time_code: a.time_code,
+                display_window: a.display_window,
+                other: a.other.clone(),
+            })
+            .unwrap_or_else(|| HeaderImageAttributes {
+                pixel_aspect: 1.0,
+                chromaticities: None,
+                time_code: None,
+                display_window: IntegerBounds::new((0, 0), data_size),
+                other: Default::default(),
+            }),
         own_attributes: {
             let mut attrs = layer_attrs.cloned().unwrap_or_default();
             // Deep files require a layer name
@@ -218,18 +226,18 @@ fn write_deep_scanlines_to_buffered<W: Write + Seek>(
             }
             attrs
         },
-        
+
         // Deep data specific
         deep: true,
         deep_data_version: Some(1),
         max_samples_per_pixel: Some(max_samples as usize),
-        
+
         // Multi-part
         chunk_count: calculate_chunk_count(height, compression),
     };
-    
+
     let headers: Headers = smallvec::smallvec![header];
-    
+
     // Write the file
     crate::block::writer::write_chunks_with(write, headers, true, |meta, chunk_writer| {
         write_deep_chunks(chunk_writer, &meta, samples, channels, compression)
@@ -253,35 +261,31 @@ fn write_deep_chunks<W: Write + Seek>(
     let header = &meta.headers[0];
     let height = header.layer_size.height();
     let lines_per_block = compression.scan_lines_per_block();
-    
+
     let mut block_idx = 0;
     let mut y = 0;
-    
+
     while y < height {
         let block_height = lines_per_block.min(height - y);
-        
+
         // Extract samples for this block
         let block_samples = extract_block_samples(samples, y, block_height, channels);
-        
+
         // Compress to deep scanline block
-        let compressed = compress_deep_scanline_block(
-            &block_samples,
-            compression,
-            channels,
-            y as i32,
-        )?;
-        
+        let compressed =
+            compress_deep_scanline_block(&block_samples, compression, channels, y as i32)?;
+
         let chunk = Chunk {
             layer_index: 0,
             compressed_block: CompressedBlock::DeepScanLine(compressed),
         };
-        
+
         writer.write_chunk(block_idx, chunk)?;
-        
+
         block_idx += 1;
         y += block_height;
     }
-    
+
     Ok(())
 }
 
@@ -293,19 +297,19 @@ fn extract_block_samples(
     channels: &ChannelList,
 ) -> DeepSamples {
     let width = samples.width;
-    
+
     // For single-line blocks (common case), optimize
     if block_height == 1 {
         return extract_single_line(samples, y_start, channels);
     }
-    
+
     // Multi-line block extraction
     let mut block = DeepSamples::new(width, block_height);
-    
+
     // Calculate cumulative counts for the block
     let mut cumulative: Vec<u32> = Vec::with_capacity(width * block_height);
     let mut total = 0u32;
-    
+
     for y in y_start..(y_start + block_height) {
         for x in 0..width {
             let count = samples.sample_count(x, y);
@@ -313,21 +317,23 @@ fn extract_block_samples(
             cumulative.push(total);
         }
     }
-    
-    block.set_cumulative_counts(cumulative).expect("valid cumulative counts");
+
+    block
+        .set_cumulative_counts(cumulative)
+        .expect("valid cumulative counts");
     // Allocate channels with same types as source
     allocate_channels_like(&mut block, samples);
-    
+
     // Copy sample data
     let total_samples = total as usize;
     if total_samples == 0 {
         return block;
     }
-    
+
     for ch_idx in 0..samples.channels.len() {
         let src_data = &samples.channels[ch_idx];
         let dst_data = &mut block.channels[ch_idx];
-        
+
         let mut dst_idx = 0;
         for y in y_start..(y_start + block_height) {
             for x in 0..width {
@@ -340,7 +346,7 @@ fn extract_block_samples(
             }
         }
     }
-    
+
     block
 }
 
@@ -369,60 +375,58 @@ fn extract_block_samples(
 /// * `samples` - Full image sample data
 /// * `y` - Scanline index (0-based)
 /// * `_channels` - Channel list (unused, kept for API symmetry)
-fn extract_single_line(
-    samples: &DeepSamples,
-    y: usize,
-    _channels: &ChannelList,
-) -> DeepSamples {
+fn extract_single_line(samples: &DeepSamples, y: usize, _channels: &ChannelList) -> DeepSamples {
     let width = samples.width;
     let mut block = DeepSamples::new(width, 1);
-    
+
     // Get cumulative counts for this line
     let start_pixel = y * width;
     let end_pixel = start_pixel + width;
-    
+
     // Calculate line-local cumulative counts
     let line_start_offset = if start_pixel == 0 {
         0
     } else {
         samples.sample_offsets[start_pixel - 1]
     };
-    
+
     let cumulative: Vec<u32> = samples.sample_offsets[start_pixel..end_pixel]
         .iter()
         .map(|&v| v.saturating_sub(line_start_offset))
         .collect();
-    
+
     let total_samples = *cumulative.last().unwrap_or(&0) as usize;
-    
-    block.set_cumulative_counts(cumulative).expect("valid cumulative counts");
+
+    block
+        .set_cumulative_counts(cumulative)
+        .expect("valid cumulative counts");
     // Allocate channels with same types as source
     allocate_channels_like(&mut block, samples);
-    
+
     if total_samples == 0 {
         return block;
     }
-    
+
     // Copy sample data
     let src_start = line_start_offset as usize;
-    
+
     for ch_idx in 0..samples.channels.len() {
         let src_data = &samples.channels[ch_idx];
         let dst_data = &mut block.channels[ch_idx];
-        
+
         copy_channel_samples(src_data, dst_data, src_start, 0, total_samples);
     }
-    
+
     block
 }
 
 /// Allocate channels in destination with same types as source.
 fn allocate_channels_like(dest: &mut DeepSamples, source: &DeepSamples) {
     use crate::image::deep::DeepChannelData;
-    
+
     let total = dest.total_samples();
     dest.channels.clear();
-    
+
     for src_ch in &source.channels {
         let new_ch = match src_ch {
             DeepChannelData::F16(_) => DeepChannelData::F16(vec![half::f16::ZERO; total]),
@@ -442,7 +446,7 @@ fn copy_channel_samples(
     count: usize,
 ) {
     use crate::image::deep::DeepChannelData;
-    
+
     match (src, dst) {
         (DeepChannelData::F16(s), DeepChannelData::F16(d)) => {
             d[dst_start..dst_start + count].copy_from_slice(&s[src_start..src_start + count]);
@@ -461,28 +465,30 @@ fn copy_channel_samples(
 mod test {
     use super::*;
     use crate::meta::attribute::SampleType;
-    
+
     #[test]
     fn test_write_simple_deep() {
         let mut samples = DeepSamples::new(4, 4);
-        
+
         // Set up some sample counts (cumulative)
         // 1 sample, 2 samples, 0 samples, 1 sample per pixel in first row
-        samples.set_cumulative_counts(vec![
-            1, 3, 3, 4,  // row 0
-            5, 5, 6, 7,  // row 1
-            8, 9, 10, 11, // row 2
-            12, 13, 14, 16, // row 3
-        ]).unwrap();
-        
+        samples
+            .set_cumulative_counts(vec![
+                1, 3, 3, 4, // row 0
+                5, 5, 6, 7, // row 1
+                8, 9, 10, 11, // row 2
+                12, 13, 14, 16, // row 3
+            ])
+            .unwrap();
+
         let channels = ChannelList::new(smallvec::smallvec![
             ChannelDescription::named("B", SampleType::F32),
             ChannelDescription::named("G", SampleType::F32),
             ChannelDescription::named("R", SampleType::F32),
         ]);
-        
+
         samples.allocate_channels(&channels);
-        
+
         // Fill with some test data
         for ch in &mut samples.channels {
             if let crate::image::deep::DeepChannelData::F32(ref mut v) = ch {
@@ -491,7 +497,7 @@ mod test {
                 }
             }
         }
-        
+
         // Write to a buffer
         let mut buffer = std::io::Cursor::new(Vec::new());
         write_deep_scanlines_to_buffered(
@@ -501,68 +507,68 @@ mod test {
             Compression::Uncompressed,
             None,
             None,
-        ).expect("write should succeed");
-        
+        )
+        .expect("write should succeed");
+
         // Verify buffer has data
         assert!(buffer.get_ref().len() > 0, "output should have data");
     }
-    
+
     #[test]
     fn test_extract_single_line() {
         let mut samples = DeepSamples::new(3, 2);
-        samples.set_cumulative_counts(vec![
-            2, 5, 5,  // row 0: 2, 3, 0 samples
-            6, 8, 10, // row 1: 1, 2, 2 samples
-        ]).unwrap();
-        
-        let channels = ChannelList::new(smallvec::smallvec![
-            ChannelDescription::named("A", SampleType::F32),
-        ]);
+        samples
+            .set_cumulative_counts(vec![
+                2, 5, 5, // row 0: 2, 3, 0 samples
+                6, 8, 10, // row 1: 1, 2, 2 samples
+            ])
+            .unwrap();
+
+        let channels = ChannelList::new(smallvec::smallvec![ChannelDescription::named(
+            "A",
+            SampleType::F32
+        ),]);
         samples.allocate_channels(&channels);
-        
+
         // Fill data
         if let crate::image::deep::DeepChannelData::F32(ref mut v) = samples.channels[0] {
             for (i, val) in v.iter_mut().enumerate() {
                 *val = i as f32;
             }
         }
-        
+
         // Extract line 1
         let line1 = extract_single_line(&samples, 1, &channels);
-        
+
         assert_eq!(line1.width, 3);
         assert_eq!(line1.height, 1);
         assert_eq!(line1.total_samples(), 5); // 1 + 2 + 2
-        
+
         // Verify sample counts
         assert_eq!(line1.sample_count(0, 0), 1);
         assert_eq!(line1.sample_count(1, 0), 2);
         assert_eq!(line1.sample_count(2, 0), 2);
     }
-    
+
     #[test]
     fn test_roundtrip_deep_file() {
         use crate::image::read::deep::read_first_deep_layer_from_file;
         use std::path::Path;
-        
+
         let path = "tests/images/valid/openexr/v2/LowResLeftView/Leaves.exr";
         if !Path::new(path).exists() {
             eprintln!("Skipping roundtrip test: {} not found", path);
             return;
         }
-        
+
         // Read original file
-        let original = read_first_deep_layer_from_file(path)
-            .expect("failed to read original");
-        
+        let original = read_first_deep_layer_from_file(path).expect("failed to read original");
+
         // Write to temp buffer
         let mut buffer = std::io::Cursor::new(Vec::new());
-        write_deep_image_to_buffered(
-            &mut buffer,
-            &original,
-            Compression::Uncompressed,
-        ).expect("failed to write");
-        
+        write_deep_image_to_buffered(&mut buffer, &original, Compression::Uncompressed)
+            .expect("failed to write");
+
         // Read back
         buffer.set_position(0);
         let roundtrip = crate::image::read::deep::read_deep()
@@ -571,15 +577,19 @@ mod test {
             .all_attributes()
             .from_buffered(std::io::BufReader::new(buffer))
             .expect("failed to read back");
-        
+
         // Compare dimensions and totals
         let orig_samples = &original.layer_data.channel_data.list[0].sample_data;
         let rt_samples = &roundtrip.layer_data.channel_data.list[0].sample_data;
-        
+
         assert_eq!(orig_samples.width, rt_samples.width, "width mismatch");
         assert_eq!(orig_samples.height, rt_samples.height, "height mismatch");
-        assert_eq!(orig_samples.total_samples(), rt_samples.total_samples(), "total samples mismatch");
-        
+        assert_eq!(
+            orig_samples.total_samples(),
+            rt_samples.total_samples(),
+            "total samples mismatch"
+        );
+
         // Verify sample counts match
         for y in 0..orig_samples.height {
             for x in 0..orig_samples.width {
@@ -587,20 +597,27 @@ mod test {
                     orig_samples.sample_count(x, y),
                     rt_samples.sample_count(x, y),
                     "sample count mismatch at ({}, {})",
-                    x, y
+                    x,
+                    y
                 );
             }
         }
-        
+
         // Verify channel data matches
         if !orig_samples.channels.is_empty() && !rt_samples.channels.is_empty() {
             use crate::image::deep::DeepChannelData;
-            
+
             match (&orig_samples.channels[0], &rt_samples.channels[0]) {
                 (DeepChannelData::F32(orig), DeepChannelData::F32(rt)) => {
                     assert_eq!(orig.len(), rt.len(), "f32 data length mismatch");
                     for (i, (o, r)) in orig.iter().zip(rt.iter()).enumerate() {
-                        assert!((o - r).abs() < 1e-6, "f32 value mismatch at {}: {} vs {}", i, o, r);
+                        assert!(
+                            (o - r).abs() < 1e-6,
+                            "f32 value mismatch at {}: {} vs {}",
+                            i,
+                            o,
+                            r
+                        );
                     }
                 }
                 (DeepChannelData::F16(orig), DeepChannelData::F16(rt)) => {

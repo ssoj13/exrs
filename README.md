@@ -24,12 +24,12 @@ Features include:
 - load specific sections of an image without processing the whole file
 - compress and decompress image pixels on multiple threads in parallel
 - add arbitrary meta data to any image, including custom byte data, with full backwards compatibility
-- any number of samples per pixel ("deep data") (not yet supported)
+- any number of samples per pixel ("deep data") for volumetric effects and deep compositing
 
 ### Current Status
 
 This library has matured quite a bit, but should still be considered incomplete.
-For example, deep data and DWA compression algorithms are not supported yet.
+For example, DWA compression algorithms are not supported yet.
 
 If you encounter an exr file that cannot be opened by this crate but should be,
 please leave an issue on this repository, containing the image file.
@@ -46,7 +46,7 @@ __What we can do:__
     - [x] access meta data and raw pixel blocks independently
     - [x] automatically crop away transparent pixels of an image (opt-in)
     - [ ] channel subsampling
-    - [ ] deep data
+    - [x] deep data (reading and writing)
     - [x] compression methods
         - [x] uncompressed
         - [x] zip line (lossless)
@@ -98,11 +98,11 @@ __What we can do:__
         - [x] Reading those with unknown types into a plain byte buffer
     - [x] Nice API for preview attribute extraction
 
-- [ ] Decompressing Pixel Data
+- [x] Decompressing Pixel Data
     - [x] Any LineOrder
     - [x] Any Pixel Type (`f16`, `f32`, `u32`)
     - [x] Multipart
-    - [ ] Deep Data
+    - [x] Deep Data
     - [x] Rip/Mip Maps  _(coded, but untested)_
     - [ ] Nice API for RGBA conversion and displaying other color spaces?
     - [ ] Compression Methods
@@ -115,11 +115,11 @@ __What we can do:__
         - [x] B44, B44A
         - [ ] DWAA, DWAB
 
-- [ ] Writing images
+- [x] Writing images
     - [x] Scan Lines
     - [x] Tiles
     - [x] Multipart
-    - [ ] Deep Data
+    - [x] Deep Data
     - [x] User supplied line order
     - [x] Rip/Mip Maps _(coded, but untested)_
     - [x] 100% correct meta data

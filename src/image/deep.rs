@@ -67,8 +67,8 @@
 //! - [`crate::block::deep`] - Low-level block compression/decompression
 //! - [OpenEXR Deep Data spec](https://openexr.com/en/latest/TechnicalIntroduction.html#deep-data)
 
-use crate::meta::attribute::{ChannelList, SampleType};
 use crate::error::{Error, Result};
+use crate::meta::attribute::{ChannelList, SampleType};
 use half::f16;
 
 /// Deep samples storage using Struct-of-Arrays (SoA) layout.
@@ -240,7 +240,11 @@ impl DeepSamples {
             return 0;
         }
         let end = self.sample_offsets[idx] as usize;
-        let start = if idx == 0 { 0 } else { self.sample_offsets[idx - 1] as usize };
+        let start = if idx == 0 {
+            0
+        } else {
+            self.sample_offsets[idx - 1] as usize
+        };
         end - start
     }
 
@@ -251,7 +255,11 @@ impl DeepSamples {
             return (0, 0);
         }
         let end = self.sample_offsets[idx] as usize;
-        let start = if idx == 0 { 0 } else { self.sample_offsets[idx - 1] as usize };
+        let start = if idx == 0 {
+            0
+        } else {
+            self.sample_offsets[idx - 1] as usize
+        };
         (start, end)
     }
 
@@ -283,7 +291,8 @@ impl DeepSamples {
         for (i, &count) in counts.iter().enumerate() {
             if count < prev {
                 return Err(Error::invalid(format!(
-                    "sample counts not monotonic at {}: {} < {}", i, count, prev
+                    "sample counts not monotonic at {}: {} < {}",
+                    i, count, prev
                 )));
             }
             prev = count;
@@ -292,7 +301,8 @@ impl DeepSamples {
         if counts.len() != self.pixel_count() {
             return Err(Error::invalid(format!(
                 "sample count length {} != pixel count {}",
-                counts.len(), self.pixel_count()
+                counts.len(),
+                self.pixel_count()
             )));
         }
 
@@ -338,7 +348,8 @@ impl DeepSamples {
             let len = channel.len();
             if len != total {
                 return Err(Error::invalid(format!(
-                    "channel {} has {} samples, expected {}", i, len, total
+                    "channel {} has {} samples, expected {}",
+                    i, len, total
                 )));
             }
         }
@@ -539,5 +550,160 @@ mod test {
         let mut samples = DeepSamples::new(2, 2);
         // Non-monotonic should fail
         assert!(samples.set_cumulative_counts(vec![2, 1, 3, 4]).is_err());
+    }
+
+    // === Edge Case Tests (7.3) ===
+
+    #[test]
+    fn edge_case_all_pixels_zero_samples() {
+        // All pixels have 0 samples - valid edge case for sparse deep images
+        let mut samples = DeepSamples::new(3, 3);
+        samples
+            .set_cumulative_counts(vec![0, 0, 0, 0, 0, 0, 0, 0, 0])
+            .unwrap();
+
+        assert_eq!(samples.total_samples(), 0);
+        assert_eq!(samples.max_samples_per_pixel(), 0);
+
+        for y in 0..3 {
+            for x in 0..3 {
+                assert_eq!(samples.sample_count(x, y), 0);
+                let (start, end) = samples.sample_range(y * 3 + x);
+                assert_eq!(start, end); // Empty range
+            }
+        }
+
+        // Iteration should work with all zero-count pixels
+        let counts: Vec<_> = samples.pixels().map(|p| p.count).collect();
+        assert_eq!(counts, vec![0; 9]);
+    }
+
+    #[test]
+    fn edge_case_single_sample_per_pixel() {
+        // Each pixel has exactly 1 sample
+        let mut samples = DeepSamples::new(2, 2);
+        samples.set_cumulative_counts(vec![1, 2, 3, 4]).unwrap();
+
+        assert_eq!(samples.total_samples(), 4);
+        assert_eq!(samples.max_samples_per_pixel(), 1);
+
+        // Add channel data
+        samples
+            .channels
+            .push(DeepChannelData::F32(vec![1.0, 2.0, 3.0, 4.0]));
+
+        // Each pixel should have exactly one sample
+        for (i, pixel) in samples.pixels().enumerate() {
+            assert_eq!(pixel.count, 1);
+            assert_eq!(pixel.get_f32(0, 0), (i + 1) as f32);
+        }
+    }
+
+    #[test]
+    fn edge_case_mixed_zero_and_nonzero() {
+        // Mix of pixels with 0, 1, and many samples
+        let mut samples = DeepSamples::new(4, 1);
+        // Pixel 0: 0 samples, Pixel 1: 5 samples, Pixel 2: 0 samples, Pixel 3: 1 sample
+        samples.set_cumulative_counts(vec![0, 5, 5, 6]).unwrap();
+
+        assert_eq!(samples.sample_count(0, 0), 0);
+        assert_eq!(samples.sample_count(1, 0), 5);
+        assert_eq!(samples.sample_count(2, 0), 0);
+        assert_eq!(samples.sample_count(3, 0), 1);
+
+        assert_eq!(samples.total_samples(), 6);
+        assert_eq!(samples.max_samples_per_pixel(), 5);
+    }
+
+    #[test]
+    fn edge_case_high_sample_count() {
+        // Single pixel with many samples (stress test for max_samples)
+        let mut samples = DeepSamples::new(1, 1);
+        let high_count = 10_000u32;
+        samples.set_cumulative_counts(vec![high_count]).unwrap();
+
+        assert_eq!(samples.total_samples(), high_count as usize);
+        assert_eq!(samples.max_samples_per_pixel(), high_count);
+        assert_eq!(samples.sample_count(0, 0), high_count as usize);
+
+        let (start, end) = samples.sample_range(0);
+        assert_eq!(start, 0);
+        assert_eq!(end, high_count as usize);
+    }
+
+    #[test]
+    fn edge_case_large_image_dimensions() {
+        // Large image with sparse samples
+        let width = 1000;
+        let height = 1000;
+        let mut samples = DeepSamples::new(width, height);
+
+        // Cumulative counts: only corners have samples
+        // top-left (0): 1 sample -> cumulative 1
+        // top-right (999): 1 sample -> cumulative 2
+        // bottom-left (999000): 2 samples -> cumulative 4
+        // bottom-right (999999): 4 samples -> cumulative 8
+        let mut counts = vec![0u32; width * height];
+
+        // Build cumulative: first pixel = 1, rest of first row = 1, until top-right = 2
+        counts[0] = 1;
+        for i in 1..width - 1 {
+            counts[i] = 1;
+        }
+        counts[width - 1] = 2;
+
+        // Middle rows all have cumulative = 2
+        for i in width..(height - 1) * width {
+            counts[i] = 2;
+        }
+
+        // Last row: bottom-left has 2 more samples (cumulative 4)
+        counts[(height - 1) * width] = 4;
+        for i in (height - 1) * width + 1..width * height - 1 {
+            counts[i] = 4;
+        }
+        counts[width * height - 1] = 8; // bottom-right: 4 more samples
+
+        samples.set_cumulative_counts(counts).unwrap();
+
+        assert_eq!(samples.total_samples(), 8);
+        assert_eq!(samples.sample_count(0, 0), 1);
+        assert_eq!(samples.sample_count(width - 1, 0), 1); // 2 - 1 = 1
+        assert_eq!(samples.sample_count(0, height - 1), 2); // 4 - 2 = 2
+        assert_eq!(samples.sample_count(width - 1, height - 1), 4); // 8 - 4 = 4
+        assert_eq!(samples.max_samples_per_pixel(), 4);
+    }
+
+    #[test]
+    fn edge_case_single_pixel_image() {
+        // Minimal 1x1 image
+        let mut samples = DeepSamples::new(1, 1);
+        samples.set_cumulative_counts(vec![3]).unwrap();
+
+        assert_eq!(samples.pixel_count(), 1);
+        assert_eq!(samples.total_samples(), 3);
+        assert_eq!(samples.sample_count(0, 0), 3);
+
+        samples
+            .channels
+            .push(DeepChannelData::F16(vec![f16::from_f32(1.0); 3]));
+        assert!(samples.validate().is_ok());
+    }
+
+    #[test]
+    fn edge_case_wide_single_row() {
+        // Very wide single-row image (common for scanline processing)
+        let width = 4096;
+        let mut samples = DeepSamples::new(width, 1);
+
+        // Alternating 0 and 1 samples
+        let counts: Vec<u32> = (0..width as u32).map(|i| (i + 1) / 2).collect();
+        samples.set_cumulative_counts(counts).unwrap();
+
+        assert_eq!(samples.total_samples(), width / 2);
+        assert_eq!(samples.sample_count(0, 0), 0);
+        assert_eq!(samples.sample_count(1, 0), 1);
+        assert_eq!(samples.sample_count(2, 0), 0);
+        assert_eq!(samples.sample_count(3, 0), 1);
     }
 }

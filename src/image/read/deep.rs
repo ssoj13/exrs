@@ -88,19 +88,18 @@
 //! - [`crate::block::deep`] - Block-level decompression
 //! - [`crate::image::read`] - Flat image reading (non-deep)
 
+use std::io::{BufReader, Read, Seek};
 use std::path::Path;
-use std::io::{Read, Seek, BufReader};
 
-use crate::error::{Result, Error};
-use crate::meta::header::Header;
-use crate::block::reader::Reader;
 use crate::block::chunk::CompressedBlock;
 use crate::block::deep::{decompress_deep_scanline_block, decompress_deep_tile_block};
-use crate::image::{Image, Layer, AnyChannels, AnyChannel, Encoding, Blocks};
+use crate::block::reader::Reader;
+use crate::error::{Error, Result};
 use crate::image::deep::DeepSamples;
+use crate::image::{AnyChannel, AnyChannels, Blocks, Encoding, Image, Layer};
+use crate::meta::header::Header;
 use crate::meta::BlockDescription;
 use smallvec::SmallVec;
-
 
 // ============================================================================
 // Types
@@ -111,7 +110,6 @@ pub type DeepImage = Image<Layer<AnyChannels<DeepSamples>>>;
 
 /// A deep image with multiple layers.
 pub type DeepLayersImage = Image<crate::image::Layers<AnyChannels<DeepSamples>>>;
-
 
 // ============================================================================
 // Simple convenience functions (like read_first_flat_layer_from_file)
@@ -143,13 +141,12 @@ pub fn read_all_deep_layers_from_file(path: impl AsRef<Path>) -> Result<DeepLaye
         .from_file(path)
 }
 
-
 // ============================================================================
 // Builder pattern API (similar to read().no_deep_data()...)
 // ============================================================================
 
 /// Start building a deep image reader.
-/// 
+///
 /// # Example
 /// ```no_run
 /// use exr::image::read::deep::read_deep;
@@ -183,7 +180,7 @@ impl ReadDeepAllChannels {
     pub fn first_valid_layer(self) -> ReadDeepFirstLayer {
         ReadDeepFirstLayer
     }
-    
+
     /// Read all deep layers.
     pub fn all_layers(self) -> ReadDeepAllLayers {
         ReadDeepAllLayers
@@ -245,13 +242,13 @@ impl<L> ReadDeepImage<L> {
         self.pedantic = true;
         self
     }
-    
+
     /// Disable parallel decompression.
     pub fn non_parallel(mut self) -> Self {
         self._parallel = false;
         self
     }
-    
+
     /// Set progress callback.
     pub fn on_progress(mut self, callback: fn(f64)) -> Self {
         self._on_progress = Some(callback);
@@ -264,24 +261,27 @@ impl ReadDeepImage<FirstLayer> {
     pub fn from_file(self, path: impl AsRef<Path>) -> Result<DeepImage> {
         self.from_unbuffered(std::fs::File::open(path)?)
     }
-    
+
     /// Read from unbuffered reader.
     pub fn from_unbuffered(self, read: impl Read + Seek) -> Result<DeepImage> {
         self.from_buffered(BufReader::new(read))
     }
-    
+
     /// Read from buffered reader.
     pub fn from_buffered(self, read: impl Read + Seek) -> Result<DeepImage> {
         let reader = Reader::read_from_buffered(read, self.pedantic)?;
-        
+
         // Find first deep layer
-        let (layer_index, _header) = reader.headers().iter().enumerate()
+        let (layer_index, _header) = reader
+            .headers()
+            .iter()
+            .enumerate()
             .find(|(_, h)| h.deep)
             .ok_or_else(|| Error::invalid("no deep layer found"))?;
-        
+
         let image_attrs = reader.headers()[layer_index].shared_attributes.clone();
         let layer = read_deep_layer_internal(reader, layer_index, self.pedantic)?;
-        
+
         Ok(Image {
             attributes: image_attrs,
             layer_data: layer,
@@ -294,70 +294,75 @@ impl ReadDeepImage<AllLayers> {
     pub fn from_file(self, path: impl AsRef<Path>) -> Result<DeepLayersImage> {
         self.from_unbuffered(std::fs::File::open(path)?)
     }
-    
+
     /// Read from unbuffered reader.
     pub fn from_unbuffered(self, read: impl Read + Seek) -> Result<DeepLayersImage> {
         self.from_buffered(BufReader::new(read))
     }
-    
+
     /// Read from buffered reader.
     pub fn from_buffered(self, read: impl Read + Seek) -> Result<DeepLayersImage> {
         let reader = Reader::read_from_buffered(read, self.pedantic)?;
-        
+
         // Collect deep layer indices
-        let deep_indices: Vec<usize> = reader.headers().iter().enumerate()
+        let deep_indices: Vec<usize> = reader
+            .headers()
+            .iter()
+            .enumerate()
             .filter(|(_, h)| h.deep)
             .map(|(i, _)| i)
             .collect();
-        
+
         if deep_indices.is_empty() {
             return Err(Error::invalid("no deep layers found"));
         }
-        
+
         let image_attrs = reader.headers()[deep_indices[0]].shared_attributes.clone();
-        
+
         // For multiple layers, we need to read the file multiple times
         // This is not ideal but necessary since Reader consumes itself
         // TODO: Optimize by caching block data
-        
+
         // For now, only support single deep layer in all_layers mode
         // to avoid re-reading the file multiple times
         if deep_indices.len() == 1 {
             let layer = read_deep_layer_internal(reader, deep_indices[0], self.pedantic)?;
             let mut layers = SmallVec::new();
             layers.push(layer);
-            
+
             return Ok(Image {
                 attributes: image_attrs,
                 layer_data: layers,
             });
         }
-        
+
         // Multiple layers - need to collect all blocks first
         let meta = reader.meta_data().clone();
         let chunks_reader = reader.all_chunks(self.pedantic)?;
-        
+
         // Group blocks by layer
         let mut layer_blocks: Vec<Vec<(usize, DeepSamples)>> = vec![Vec::new(); meta.headers.len()];
-        
+
         for chunk_result in chunks_reader {
             let chunk = chunk_result?;
             let layer_idx = chunk.layer_index;
-            
+
             if !deep_indices.contains(&layer_idx) {
                 continue;
             }
-            
+
             let header = &meta.headers[layer_idx];
             let width = header.layer_size.width();
             let height = header.layer_size.height();
-            
+
             match chunk.compressed_block {
                 CompressedBlock::DeepScanLine(ref deep_block) => {
                     let y = deep_block.y_coordinate as usize;
-                    let block_height = header.compression.scan_lines_per_block()
+                    let block_height = header
+                        .compression
+                        .scan_lines_per_block()
                         .min(height.saturating_sub(y));
-                    
+
                     let samples = decompress_deep_scanline_block(
                         deep_block,
                         header.compression,
@@ -366,7 +371,7 @@ impl ReadDeepImage<AllLayers> {
                         block_height,
                         self.pedantic,
                     )?;
-                    
+
                     layer_blocks[layer_idx].push((y, samples));
                 }
                 CompressedBlock::DeepTile(ref deep_block) => {
@@ -374,7 +379,7 @@ impl ReadDeepImage<AllLayers> {
                         BlockDescription::Tiles(desc) => desc.tile_size,
                         _ => return Err(Error::invalid("deep tile in scanline image")),
                     };
-                    
+
                     let samples = decompress_deep_tile_block(
                         deep_block,
                         header.compression,
@@ -383,39 +388,38 @@ impl ReadDeepImage<AllLayers> {
                         tile_size.height(),
                         self.pedantic,
                     )?;
-                    
+
                     let y = deep_block.coordinates.tile_index.y() * tile_size.height();
                     layer_blocks[layer_idx].push((y, samples));
                 }
                 _ => {}
             }
         }
-        
+
         // Build layers
         let mut layers = SmallVec::new();
-        
+
         for layer_idx in deep_indices {
             let header = &meta.headers[layer_idx];
             let mut blocks = std::mem::take(&mut layer_blocks[layer_idx]);
             blocks.sort_by_key(|(y, _)| *y);
-            
+
             let merged = merge_deep_blocks(
                 blocks,
                 header.layer_size.width(),
                 header.layer_size.height(),
             )?;
-            
+
             let layer = build_deep_layer(header, merged);
             layers.push(layer);
         }
-        
+
         Ok(Image {
             attributes: image_attrs,
             layer_data: layers,
         })
     }
 }
-
 
 // ============================================================================
 // Internal implementation
@@ -431,26 +435,26 @@ fn read_deep_layer_internal<R: Read + Seek>(
     let header = &meta.headers[layer_index];
     let width = header.layer_size.width();
     let height = header.layer_size.height();
-    
+
     let chunks_reader = reader.all_chunks(pedantic)?;
-    
+
     // Collect and decompress deep blocks for this layer
     let mut blocks: Vec<(usize, DeepSamples)> = Vec::new();
     for chunk_result in chunks_reader {
         let chunk = chunk_result?;
-        
+
         if chunk.layer_index != layer_index {
             continue;
         }
-        
+
         let block_header = &meta.headers[chunk.layer_index];
-        
+
         match chunk.compressed_block {
             CompressedBlock::DeepScanLine(ref deep_block) => {
                 let y = deep_block.y_coordinate as usize;
                 // Use scan_lines_per_block directly - the decompression handles partial blocks internally
                 let block_height = header.compression.scan_lines_per_block();
-                
+
                 let samples = decompress_deep_scanline_block(
                     deep_block,
                     block_header.compression,
@@ -459,7 +463,7 @@ fn read_deep_layer_internal<R: Read + Seek>(
                     block_height,
                     pedantic,
                 )?;
-                
+
                 blocks.push((y, samples));
             }
             CompressedBlock::DeepTile(ref deep_block) => {
@@ -467,7 +471,7 @@ fn read_deep_layer_internal<R: Read + Seek>(
                     BlockDescription::Tiles(desc) => desc.tile_size,
                     _ => return Err(Error::invalid("deep tile in scanline image")),
                 };
-                
+
                 let samples = decompress_deep_tile_block(
                     deep_block,
                     block_header.compression,
@@ -476,34 +480,41 @@ fn read_deep_layer_internal<R: Read + Seek>(
                     tile_size.height(),
                     pedantic,
                 )?;
-                
+
                 let y = deep_block.coordinates.tile_index.y() * tile_size.height();
                 blocks.push((y, samples));
             }
             _ => {} // Skip non-deep blocks
         }
     }
-    
+
     // Sort by y coordinate and merge
     blocks.sort_by_key(|(y, _)| *y);
     let merged = merge_deep_blocks(blocks, width, height)?;
-    
+
     Ok(build_deep_layer(&meta.headers[layer_index], merged))
 }
 
 /// Build a Layer from header and DeepSamples.
 fn build_deep_layer(header: &Header, samples: DeepSamples) -> Layer<AnyChannels<DeepSamples>> {
     // Build channel list - first channel gets the samples, rest get empty
-    let channels: SmallVec<[AnyChannel<DeepSamples>; 4]> = header.channels.list.iter()
+    let channels: SmallVec<[AnyChannel<DeepSamples>; 4]> = header
+        .channels
+        .list
+        .iter()
         .enumerate()
         .map(|(i, ch)| AnyChannel {
             name: ch.name.clone(),
-            sample_data: if i == 0 { samples.clone() } else { DeepSamples::new(0, 0) },
+            sample_data: if i == 0 {
+                samples.clone()
+            } else {
+                DeepSamples::new(0, 0)
+            },
             quantize_linearly: ch.quantize_linearly,
             sampling: ch.sampling,
         })
         .collect();
-    
+
     Layer {
         channel_data: AnyChannels { list: channels },
         attributes: header.own_attributes.clone(),
@@ -557,68 +568,92 @@ fn merge_deep_blocks(
     if blocks.is_empty() {
         return Ok(DeepSamples::new(total_width, total_height));
     }
-    
+
     if blocks.len() == 1 {
         let (_, samples) = blocks.into_iter().next().unwrap();
         return Ok(samples);
     }
-    
+
     // Multiple blocks - merge sample counts and channel data
     let total_pixels = total_width * total_height;
     let mut combined_offsets = vec![0u32; total_pixels + 1];
-    
+
     // Calculate sample counts from all blocks
     for (y, block) in &blocks {
         for row in 0..block.height {
             let image_y = y + row;
-            if image_y >= total_height { break; }
-            
+            if image_y >= total_height {
+                break;
+            }
+
             for col in 0..block.width.min(total_width) {
                 let pixel_idx = image_y * total_width + col;
                 combined_offsets[pixel_idx + 1] = block.sample_count(col, row) as u32;
             }
         }
     }
-    
+
     // Convert to cumulative
     for i in 0..total_pixels {
         combined_offsets[i + 1] += combined_offsets[i];
     }
-    
+
     let total_samples = combined_offsets[total_pixels] as usize;
     let num_channels = blocks.first().map(|(_, b)| b.channels.len()).unwrap_or(0);
-    
+
     // Merge channel data
     use crate::image::deep::DeepChannelData;
     use crate::meta::attribute::SampleType;
-    
+
     let mut combined_channels = Vec::with_capacity(num_channels);
-    
+
     for ch_idx in 0..num_channels {
-        let sample_type = blocks.first()
+        let sample_type = blocks
+            .first()
             .and_then(|(_, b)| b.channels.get(ch_idx))
             .map(|ch| ch.sample_type());
-        
+
         match sample_type {
             Some(SampleType::F16) => {
                 let mut data = vec![half::f16::ZERO; total_samples];
-                merge_channel_f16(&blocks, ch_idx, total_width, total_height, &combined_offsets, &mut data);
+                merge_channel_f16(
+                    &blocks,
+                    ch_idx,
+                    total_width,
+                    total_height,
+                    &combined_offsets,
+                    &mut data,
+                );
                 combined_channels.push(DeepChannelData::F16(data));
             }
             Some(SampleType::F32) => {
                 let mut data = vec![0.0f32; total_samples];
-                merge_channel_f32(&blocks, ch_idx, total_width, total_height, &combined_offsets, &mut data);
+                merge_channel_f32(
+                    &blocks,
+                    ch_idx,
+                    total_width,
+                    total_height,
+                    &combined_offsets,
+                    &mut data,
+                );
                 combined_channels.push(DeepChannelData::F32(data));
             }
             Some(SampleType::U32) => {
                 let mut data = vec![0u32; total_samples];
-                merge_channel_u32(&blocks, ch_idx, total_width, total_height, &combined_offsets, &mut data);
+                merge_channel_u32(
+                    &blocks,
+                    ch_idx,
+                    total_width,
+                    total_height,
+                    &combined_offsets,
+                    &mut data,
+                );
                 combined_channels.push(DeepChannelData::U32(data));
             }
             None => {}
         }
     }
-    
+
     // combined_offsets has length total_pixels + 1 with leading 0
     // sample_offsets expects length total_pixels without leading 0
     Ok(DeepSamples {
@@ -639,14 +674,22 @@ fn merge_channel_f16(
     output: &mut [half::f16],
 ) {
     use crate::image::deep::DeepChannelData;
-    
+
     for (y, block) in blocks {
         let src = match block.channels.get(ch_idx) {
             Some(DeepChannelData::F16(v)) => v,
             _ => continue,
         };
-        
-        copy_block_samples(block, *y, src, total_width, total_height, combined_offsets, output);
+
+        copy_block_samples(
+            block,
+            *y,
+            src,
+            total_width,
+            total_height,
+            combined_offsets,
+            output,
+        );
     }
 }
 
@@ -660,14 +703,22 @@ fn merge_channel_f32(
     output: &mut [f32],
 ) {
     use crate::image::deep::DeepChannelData;
-    
+
     for (y, block) in blocks {
         let src = match block.channels.get(ch_idx) {
             Some(DeepChannelData::F32(v)) => v,
             _ => continue,
         };
-        
-        copy_block_samples(block, *y, src, total_width, total_height, combined_offsets, output);
+
+        copy_block_samples(
+            block,
+            *y,
+            src,
+            total_width,
+            total_height,
+            combined_offsets,
+            output,
+        );
     }
 }
 
@@ -681,14 +732,22 @@ fn merge_channel_u32(
     output: &mut [u32],
 ) {
     use crate::image::deep::DeepChannelData;
-    
+
     for (y, block) in blocks {
         let src = match block.channels.get(ch_idx) {
             Some(DeepChannelData::U32(v)) => v,
             _ => continue,
         };
-        
-        copy_block_samples(block, *y, src, total_width, total_height, combined_offsets, output);
+
+        copy_block_samples(
+            block,
+            *y,
+            src,
+            total_width,
+            total_height,
+            combined_offsets,
+            output,
+        );
     }
 }
 
@@ -704,20 +763,24 @@ fn copy_block_samples<T: Copy>(
 ) {
     for row in 0..block.height {
         let image_y = y_offset + row;
-        if image_y >= total_height { break; }
-        
+        if image_y >= total_height {
+            break;
+        }
+
         for col in 0..block.width.min(total_width) {
             let pixel_idx = image_y * total_width + col;
             let block_pixel_idx = row * block.width + col;
             let count = block.sample_count(col, row);
-            
-            if count == 0 { continue; }
-            
+
+            if count == 0 {
+                continue;
+            }
+
             // Get source range from block
             let (src_start, _) = block.sample_range(block_pixel_idx);
             // combined_offsets has leading 0, so combined_offsets[N] = cumulative count before pixel N
             let dst_start = combined_offsets[pixel_idx] as usize;
-            
+
             for s in 0..count {
                 if src_start + s < src.len() && dst_start + s < output.len() {
                     output[dst_start + s] = src[src_start + s];
@@ -727,11 +790,10 @@ fn copy_block_samples<T: Copy>(
     }
 }
 
-
 #[cfg(test)]
 mod test {
     use super::*;
-    
+
     #[test]
     fn test_read_deep_first_layer() {
         let path = "tests/images/valid/openexr/v2/LowResLeftView/Balls.exr";
@@ -739,7 +801,7 @@ mod test {
             eprintln!("Skipping: {} not found", path);
             return;
         }
-        
+
         let image = match read_first_deep_layer_from_file(path) {
             Ok(img) => img,
             Err(e) => {
@@ -747,18 +809,18 @@ mod test {
                 panic!("Failed to read: {}", e);
             }
         };
-        
+
         assert!(image.layer_data.size.width() > 0);
         assert!(image.layer_data.size.height() > 0);
-        
+
         let samples = &image.layer_data.channel_data.list[0].sample_data;
         assert!(samples.total_samples() > 0);
-        
+
         println!("Size: {:?}", image.layer_data.size);
         println!("Channels: {}", image.layer_data.channel_data.list.len());
         println!("Total samples: {}", samples.total_samples());
     }
-    
+
     #[test]
     fn test_read_deep_builder_api() {
         let path = "tests/images/valid/openexr/v2/LowResLeftView/Ground.exr";
@@ -766,18 +828,18 @@ mod test {
             eprintln!("Skipping: {} not found", path);
             return;
         }
-        
+
         let image = read_deep()
             .all_channels()
             .first_valid_layer()
             .all_attributes()
             .from_file(path)
             .unwrap();
-        
+
         let samples = &image.layer_data.channel_data.list[0].sample_data;
         println!("Ground.exr: {} samples", samples.total_samples());
     }
-    
+
     #[test]
     fn test_read_via_main_api() {
         let path = "tests/images/valid/openexr/v2/LowResLeftView/Leaves.exr";
@@ -785,7 +847,7 @@ mod test {
             eprintln!("Skipping: {} not found", path);
             return;
         }
-        
+
         // Test using main read() API
         use crate::image::read::read;
         let image = read()
@@ -795,7 +857,7 @@ mod test {
             .all_attributes()
             .from_file(path)
             .unwrap();
-        
+
         let samples = &image.layer_data.channel_data.list[0].sample_data;
         println!("Leaves.exr via read(): {} samples", samples.total_samples());
     }

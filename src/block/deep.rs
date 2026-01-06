@@ -61,9 +61,9 @@
 //! - [`crate::block::chunk`] - Block types (`CompressedDeepScanLineBlock`)
 
 use crate::block::chunk::{CompressedDeepScanLineBlock, CompressedDeepTileBlock};
-use crate::compression::{Compression, deep as deep_compress};
+use crate::compression::{deep as deep_compress, Compression};
 use crate::error::{Error, Result};
-use crate::image::deep::{DeepSamples, DeepChannelData};
+use crate::image::deep::{DeepChannelData, DeepSamples};
 use crate::meta::attribute::{ChannelList, SampleType};
 use half::f16;
 
@@ -102,18 +102,14 @@ pub fn decompress_deep_scanline_block(
     let height = lines_per_block;
 
     // Decompress sample count table
-    let table_bytes: Vec<u8> = block.compressed_pixel_offset_table
+    let table_bytes: Vec<u8> = block
+        .compressed_pixel_offset_table
         .iter()
         .map(|&b| b as u8)
         .collect();
 
-    let cumulative_counts = deep_compress::decompress_sample_table(
-        compression,
-        &table_bytes,
-        width,
-        height,
-        pedantic,
-    )?;
+    let cumulative_counts =
+        deep_compress::decompress_sample_table(compression, &table_bytes, width, height, pedantic)?;
 
     // Validate counts
     deep_compress::validate_sample_table(&cumulative_counts)?;
@@ -122,10 +118,7 @@ pub fn decompress_deep_scanline_block(
     let mut samples = DeepSamples::new(width, height);
 
     // Convert i32 cumulative to u32
-    let cumulative_u32: Vec<u32> = cumulative_counts
-        .iter()
-        .map(|&c| c as u32)
-        .collect();
+    let cumulative_u32: Vec<u32> = cumulative_counts.iter().map(|&c| c as u32).collect();
 
     samples.set_cumulative_counts(cumulative_u32)?;
 
@@ -138,11 +131,7 @@ pub fn decompress_deep_scanline_block(
     )?;
 
     // Unpack channel data
-    unpack_deep_channels(
-        &decompressed_data,
-        &mut samples,
-        channels,
-    )?;
+    unpack_deep_channels(&decompressed_data, &mut samples, channels)?;
 
     samples.validate()?;
     Ok(samples)
@@ -158,7 +147,8 @@ pub fn decompress_deep_tile_block(
     pedantic: bool,
 ) -> Result<DeepSamples> {
     // Decompress sample count table
-    let table_bytes: Vec<u8> = block.compressed_pixel_offset_table
+    let table_bytes: Vec<u8> = block
+        .compressed_pixel_offset_table
         .iter()
         .map(|&b| b as u8)
         .collect();
@@ -177,10 +167,7 @@ pub fn decompress_deep_tile_block(
     // Create DeepSamples structure
     let mut samples = DeepSamples::new(tile_width, tile_height);
 
-    let cumulative_u32: Vec<u32> = cumulative_counts
-        .iter()
-        .map(|&c| c as u32)
-        .collect();
+    let cumulative_u32: Vec<u32> = cumulative_counts.iter().map(|&c| c as u32).collect();
 
     samples.set_cumulative_counts(cumulative_u32)?;
 
@@ -193,11 +180,7 @@ pub fn decompress_deep_tile_block(
     )?;
 
     // Unpack channel data
-    unpack_deep_channels(
-        &decompressed_data,
-        &mut samples,
-        channels,
-    )?;
+    unpack_deep_channels(&decompressed_data, &mut samples, channels)?;
 
     samples.validate()?;
     Ok(samples)
@@ -222,7 +205,9 @@ fn unpack_deep_channels(
     samples.allocate_channels(channels);
 
     // Calculate bytes per sample (sum of all channel bytes)
-    let bytes_per_sample: usize = channels.list.iter()
+    let bytes_per_sample: usize = channels
+        .list
+        .iter()
         .map(|ch| ch.sample_type.bytes_per_sample())
         .sum();
 
@@ -230,7 +215,10 @@ fn unpack_deep_channels(
     if data.len() != expected_size {
         return Err(Error::invalid(format!(
             "deep sample data size mismatch: got {}, expected {} ({} samples * {} bytes)",
-            data.len(), expected_size, total_samples, bytes_per_sample
+            data.len(),
+            expected_size,
+            total_samples,
+            bytes_per_sample
         )));
     }
 
@@ -297,17 +285,16 @@ fn unpack_deep_channels(
 
 /// Pack DeepSamples channels into bytes for compression.
 /// Returns the data in pixel-interleaved LE format.
-pub fn pack_deep_channels(
-    samples: &DeepSamples,
-    channels: &ChannelList,
-) -> Vec<u8> {
+pub fn pack_deep_channels(samples: &DeepSamples, channels: &ChannelList) -> Vec<u8> {
     let total_samples = samples.total_samples();
 
     if total_samples == 0 {
         return Vec::new();
     }
 
-    let bytes_per_sample: usize = channels.list.iter()
+    let bytes_per_sample: usize = channels
+        .list
+        .iter()
         .map(|ch| ch.sample_type.bytes_per_sample())
         .sum();
 
@@ -356,25 +343,16 @@ pub fn compress_deep_scanline_block(
     y_coordinate: i32,
 ) -> Result<CompressedDeepScanLineBlock> {
     // Get cumulative counts as i32
-    let cumulative_i32: Vec<i32> = samples.sample_offsets
-        .iter()
-        .map(|&c| c as i32)
-        .collect();
+    let cumulative_i32: Vec<i32> = samples.sample_offsets.iter().map(|&c| c as i32).collect();
 
     // Compress sample count table
-    let compressed_table = deep_compress::compress_sample_table(
-        compression,
-        &cumulative_i32,
-    )?;
+    let compressed_table = deep_compress::compress_sample_table(compression, &cumulative_i32)?;
 
     // Pack and compress sample data
     let packed_data = pack_deep_channels(samples, channels);
     let decompressed_size = packed_data.len();
 
-    let compressed_data = deep_compress::compress_sample_data(
-        compression,
-        &packed_data,
-    )?;
+    let compressed_data = deep_compress::compress_sample_data(compression, &packed_data)?;
 
     Ok(CompressedDeepScanLineBlock {
         y_coordinate,
@@ -392,25 +370,16 @@ pub fn compress_deep_tile_block(
     coordinates: crate::block::chunk::TileCoordinates,
 ) -> Result<CompressedDeepTileBlock> {
     // Get cumulative counts as i32
-    let cumulative_i32: Vec<i32> = samples.sample_offsets
-        .iter()
-        .map(|&c| c as i32)
-        .collect();
+    let cumulative_i32: Vec<i32> = samples.sample_offsets.iter().map(|&c| c as i32).collect();
 
     // Compress sample count table
-    let compressed_table = deep_compress::compress_sample_table(
-        compression,
-        &cumulative_i32,
-    )?;
+    let compressed_table = deep_compress::compress_sample_table(compression, &cumulative_i32)?;
 
     // Pack and compress sample data
     let packed_data = pack_deep_channels(samples, channels);
     let decompressed_size = packed_data.len();
 
-    let compressed_data = deep_compress::compress_sample_data(
-        compression,
-        &packed_data,
-    )?;
+    let compressed_data = deep_compress::compress_sample_data(compression, &packed_data)?;
 
     Ok(CompressedDeepTileBlock {
         coordinates,
@@ -453,20 +422,19 @@ mod test {
         }
 
         // Compress
-        let block = compress_deep_scanline_block(
-            &samples,
-            Compression::Uncompressed,
-            &channels,
-            0,
-        ).unwrap();
+        let block = compress_deep_scanline_block(&samples, Compression::Uncompressed, &channels, 0)
+            .unwrap();
 
         // Decompress
         let recovered = decompress_deep_scanline_block(
             &block,
             Compression::Uncompressed,
             &channels,
-            2, 2, true,
-        ).unwrap();
+            2,
+            2,
+            true,
+        )
+        .unwrap();
 
         assert_eq!(samples.sample_offsets, recovered.sample_offsets);
         assert_eq!(samples.channels.len(), recovered.channels.len());
@@ -486,12 +454,9 @@ mod test {
         let channels = make_test_channels();
 
         let mut samples = DeepSamples::new(4, 4);
-        samples.set_cumulative_counts(vec![
-            1, 1, 2, 3,
-            3, 4, 5, 5,
-            6, 6, 6, 7,
-            8, 9, 10, 12,
-        ]).unwrap();
+        samples
+            .set_cumulative_counts(vec![1, 1, 2, 3, 3, 4, 5, 5, 6, 6, 6, 7, 8, 9, 10, 12])
+            .unwrap();
         samples.allocate_channels(&channels);
 
         for ch in &mut samples.channels {
@@ -502,19 +467,11 @@ mod test {
             }
         }
 
-        let block = compress_deep_scanline_block(
-            &samples,
-            Compression::RLE,
-            &channels,
-            0,
-        ).unwrap();
+        let block = compress_deep_scanline_block(&samples, Compression::RLE, &channels, 0).unwrap();
 
-        let recovered = decompress_deep_scanline_block(
-            &block,
-            Compression::RLE,
-            &channels,
-            4, 4, true,
-        ).unwrap();
+        let recovered =
+            decompress_deep_scanline_block(&block, Compression::RLE, &channels, 4, 4, true)
+                .unwrap();
 
         assert_eq!(samples.sample_offsets, recovered.sample_offsets);
     }
@@ -529,13 +486,25 @@ mod test {
 
         // Set specific values
         if let DeepChannelData::F32(ref mut r) = samples.channels[0] {
-            r[0] = 1.0; r[1] = 2.0; r[2] = 3.0; r[3] = 4.0; r[4] = 5.0;
+            r[0] = 1.0;
+            r[1] = 2.0;
+            r[2] = 3.0;
+            r[3] = 4.0;
+            r[4] = 5.0;
         }
         if let DeepChannelData::F32(ref mut g) = samples.channels[1] {
-            g[0] = 10.0; g[1] = 20.0; g[2] = 30.0; g[3] = 40.0; g[4] = 50.0;
+            g[0] = 10.0;
+            g[1] = 20.0;
+            g[2] = 30.0;
+            g[3] = 40.0;
+            g[4] = 50.0;
         }
         if let DeepChannelData::F32(ref mut b) = samples.channels[2] {
-            b[0] = 100.0; b[1] = 200.0; b[2] = 300.0; b[3] = 400.0; b[4] = 500.0;
+            b[0] = 100.0;
+            b[1] = 200.0;
+            b[2] = 300.0;
+            b[3] = 400.0;
+            b[4] = 500.0;
         }
 
         let packed = pack_deep_channels(&samples, &channels);

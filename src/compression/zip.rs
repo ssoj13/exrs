@@ -1,8 +1,7 @@
-
 // see https://github.com/openexr/openexr/blob/master/OpenEXR/IlmImf/ImfCompressor.cpp
 
-use super::*;
 use super::optimize_bytes::*;
+use super::*;
 use crate::error::Result;
 
 // scanline decompression routine, see https://github.com/openexr/openexr/blob/master/OpenEXR/IlmImf/ImfScanLineInputFile.cpp

@@ -89,15 +89,35 @@ will contain an additional vector with the mip map levels.
 
 ### Deep Data
 The first choice to be made is whether you want to load deep data or not.
-Deep data is where multiple colors are stored in one pixel at the same location.
-Currently, deep data is not supported yet, so we always call `no_deep_data()`.
+Deep data is where multiple samples are stored per pixel at the same location,
+commonly used for volumetric effects, particles, and deep compositing.
 
+For **flat data** (one sample per pixel), use `no_deep_data()`:
 ```rust
 fn main(){
     use exr::prelude::*;
     let reader = read().no_deep_data();
 }
 ```
+
+For **deep data** (variable samples per pixel), use the dedicated deep data API:
+```rust
+fn main(){
+    use exr::image::read::deep::{read_deep, read_first_deep_layer_from_file};
+    
+    // Simple: read first deep layer
+    let image = read_first_deep_layer_from_file("deep.exr").unwrap();
+    
+    // Or use the builder API
+    let image = read_deep()
+        .all_channels()
+        .first_valid_layer()
+        .all_attributes()
+        .from_file("deep.exr").unwrap();
+}
+```
+
+See the [Deep Data](#deep-data-1) section below for more details.
 
 ### Resolution Levels
 Decide whether you want to load the largest resolution level, or all Mip Maps from the file.
@@ -585,4 +605,143 @@ or use custom parallelization mechanisms.
 You can find these low level operations in the `exr::block` module.
 Start with the `block::read(...)`
 and `block::write(...)` functions.
+
+
+# Deep Data
+
+Deep data (OpenEXR 2.0+) stores a variable number of samples at each pixel location.
+This is essential for volumetric effects, particles, and deep compositing workflows.
+
+## When to Use Deep Data
+
+- **Volumetric effects**: Smoke, fog, clouds where rays pass through multiple density values
+- **Particle systems**: Each particle contributes a sample at its projected pixel
+- **Deep compositing**: Proper z-ordered layering without artifacts from pre-multiplied alpha
+- **Hair/fur rendering**: Multiple transparent strands at each pixel
+
+## Reading Deep Images
+
+### Simple API
+
+```rust
+use exr::image::read::deep::read_first_deep_layer_from_file;
+
+fn main() {
+    let image = read_first_deep_layer_from_file("particles.exr").unwrap();
+    
+    // Access deep sample data
+    let layer = &image.layer_data;
+    let samples = &layer.channel_data.list[0].sample_data;
+    
+    println!("Image size: {}x{}", samples.width, samples.height);
+    println!("Total samples: {}", samples.total_samples());
+    println!("Max samples per pixel: {}", samples.max_samples_per_pixel());
+    
+    // Iterate over pixels
+    for y in 0..samples.height {
+        for x in 0..samples.width {
+            let count = samples.sample_count(x, y);
+            if count > 0 {
+                println!("Pixel ({}, {}) has {} samples", x, y, count);
+            }
+        }
+    }
+}
+```
+
+### Builder API
+
+```rust
+use exr::image::read::deep::read_deep;
+
+fn main() {
+    let image = read_deep()
+        .all_channels()         // Load all channels
+        .first_valid_layer()    // First deep layer only
+        .all_attributes()       // Keep all metadata
+        .from_file("volumetric.exr").unwrap();
+    
+    // For multiple layers:
+    let multi_layer = read_deep()
+        .all_channels()
+        .all_layers()           // All deep layers
+        .all_attributes()
+        .from_file("multi_layer_deep.exr").unwrap();
+}
+```
+
+## The DeepSamples Structure
+
+`DeepSamples` uses a Struct-of-Arrays layout with cumulative offsets:
+
+```rust
+use exr::image::deep::{DeepSamples, DeepChannelData};
+
+fn process_deep_samples(samples: &DeepSamples) {
+    // Get sample count for a specific pixel
+    let count = samples.sample_count(10, 20);
+    
+    // Get sample range for direct array access
+    let pixel_idx = 20 * samples.width + 10;
+    let (start, end) = samples.sample_range(pixel_idx);
+    
+    // Access channel data
+    for channel in &samples.channels {
+        match channel {
+            DeepChannelData::F16(data) => {
+                // Process f16 samples[start..end]
+                for i in start..end {
+                    let value = data[i];
+                }
+            }
+            DeepChannelData::F32(data) => {
+                // Process f32 samples (usually Z depth)
+                for i in start..end {
+                    let depth = data[i];
+                }
+            }
+            DeepChannelData::U32(data) => {
+                // Process u32 samples (object IDs, etc.)
+            }
+        }
+    }
+}
+```
+
+## Writing Deep Images
+
+```rust
+use exr::image::read::deep::read_first_deep_layer_from_file;
+use exr::image::write::deep::write_deep_image_to_file;
+use exr::compression::Compression;
+
+fn main() {
+    // Read a deep image
+    let image = read_first_deep_layer_from_file("input.exr").unwrap();
+    
+    // Write with compression
+    write_deep_image_to_file(
+        "output.exr",
+        &image,
+        Compression::ZIP1,  // Recommended for deep data
+    ).unwrap();
+}
+```
+
+## Deep Data vs Flat Data
+
+| Feature | Flat Data | Deep Data |
+|---------|-----------|-----------|  
+| Samples per pixel | Exactly 1 | Variable (0 to thousands) |
+| Use case | Regular images | Volumetric, particles, compositing |
+| Memory | Predictable | Depends on content |
+| Reading API | `read().no_deep_data()...` | `read_deep()...` |
+| Block types | `ScanLine`, `Tile` | `DeepScanLine`, `DeepTile` |
+
+## Performance Tips
+
+- Use `sample_count()` to skip empty pixels (count == 0)
+- Process channels separately for better cache utilization (SoA layout)
+- Use `sample_range()` for direct array access instead of iteration
+- Deep images with ZIP compression provide good balance of size and speed
 
