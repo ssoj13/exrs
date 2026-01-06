@@ -92,33 +92,17 @@ pub fn write<W: Write + Seek>(
 /// The blocks written to the file must be exactly in this order,
 /// except for when the `LineOrder` is unspecified.
 /// The index represents the block index, in increasing line order, within the header.
+///
+/// # Refactored
+/// Now delegates to `Header::enumerate_ordered_block_indices()` to avoid code duplication.
+/// See: DEAD_CODE_ANALYSIS.md item #5
 pub fn enumerate_ordered_header_block_indices(
     headers: &[Header],
 ) -> impl '_ + Iterator<Item = (usize, BlockIndex)> {
     headers
         .iter()
         .enumerate()
-        .flat_map(|(layer_index, header)| {
-            header
-                .enumerate_ordered_blocks()
-                .map(move |(index_in_header, tile)| {
-                    let data_indices = header
-                        .get_absolute_block_pixel_coordinates(tile.location)
-                        .expect("tile coordinate bug");
-
-                    let block = BlockIndex {
-                        layer: layer_index,
-                        level: tile.location.level_index,
-                        pixel_position: data_indices
-                            .position
-                            .to_usize("data indices start")
-                            .expect("data index bug"),
-                        pixel_size: data_indices.size,
-                    };
-
-                    (index_in_header, block)
-                })
-        })
+        .flat_map(|(layer_index, header)| header.enumerate_ordered_block_indices(layer_index))
 }
 
 impl UncompressedBlock {
@@ -244,24 +228,18 @@ impl UncompressedBlock {
         })
     }
 
+    // NOTE: lines_mut() is blocked by Rust borrow checker limitations.
+    // The closure captures self.data mutably but needs multiple accesses.
+    // Keeping as documentation of the attempted approach.
+    // See: DEAD_CODE_ANALYSIS.md item #2
     /* TODO pub fn lines_mut<'s>(&'s mut self, header: &Header) -> impl 's + Iterator<Item=LineRefMut<'s>> {
         LineIndex::lines_in_block(self.index, &header.channels)
             .map(move |(bytes, line)| LineSlice { location: line, value: &mut self.data[bytes] })
     }*/
 
-    /*// TODO make iterator
-    /// Call a closure for each line of samples in this uncompressed block.
-    pub fn for_lines(
-        &self, header: &Header,
-        mut accept_line: impl FnMut(LineRef<'_>) -> UnitResult
-    ) -> UnitResult {
-        for (bytes, line) in LineIndex::lines_in_block(self.index, &header.channels) {
-            let line_ref = LineSlice { location: line, value: &self.data[bytes] };
-            accept_line(line_ref)?;
-        }
-
-        Ok(())
-    }*/
+    // Deleted: for_lines() was redundant - replaced by lines() iterator.
+    // Users can use: for line in block.lines(&channels) { ... }
+    // See: DEAD_CODE_ANALYSIS.md item #3
 
     // TODO from iterator??
     /// Create an uncompressed block byte vector by requesting one line of samples after another.

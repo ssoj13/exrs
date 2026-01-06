@@ -402,22 +402,8 @@ impl Header {
         ordered
     }
 
-    /*/// Iterate over all blocks, in the order specified by the headers line order attribute.
-    /// Also includes an index of the block if it were `LineOrder::Increasing`, starting at zero for this header.
-    pub fn enumerate_ordered_blocks(&self) -> impl Iterator<Item = (usize, TileIndices)> + Send {
-        let increasing_y = self.blocks_increasing_y_order().enumerate();
-
-        let ordered: Box<dyn Send + Iterator<Item = (usize, TileIndices)>> = {
-            if self.line_order == LineOrder::Decreasing {
-                Box::new(increasing_y.rev()) // TODO without box?
-            }
-            else {
-                Box::new(increasing_y)
-            }
-        };
-
-        ordered
-    }*/
+    // Deleted: Duplicate of enumerate_ordered_blocks() above.
+    // See: DEAD_CODE_ANALYSIS.md item #4
 
     /// Iterate over all tile indices in this header in `LineOrder::Increasing` order.
     pub fn blocks_increasing_y_order(
@@ -483,20 +469,53 @@ impl Header {
         vec.into_iter() // TODO without collect
     }
 
-    /* TODO
     /// The block indices of this header, ordered as they would appear in the file.
-    pub fn ordered_block_indices<'s>(&'s self, layer_index: usize) -> impl 's + Iterator<Item=BlockIndex> {
-        self.enumerate_ordered_blocks().map(|(chunk_index, tile)|{
-            let data_indices = self.get_absolute_block_pixel_coordinates(tile.location).expect("tile coordinate bug");
+    /// Returns an iterator yielding (chunk_index, BlockIndex) pairs.
+    /// 
+    /// The chunk_index is the position in increasing line order within this header,
+    /// useful for tracking block positions during parallel processing.
+    ///
+    /// # Panics
+    /// Panics if tile coordinates are invalid (indicates internal library bug).
+    ///
+    /// # See Also
+    /// - DEAD_CODE_ANALYSIS.md item #5 - this was an unfinished feature, now completed.
+    pub fn enumerate_ordered_block_indices(
+        &self,
+        layer_index: usize,
+    ) -> impl '_ + Iterator<Item = (usize, crate::block::BlockIndex)> {
+        self.enumerate_ordered_blocks()
+            .map(move |(chunk_index, tile)| {
+                let data_indices = self
+                    .get_absolute_block_pixel_coordinates(tile.location)
+                    .expect("tile coordinate bug: invalid coordinates from enumerate_ordered_blocks");
 
-            BlockIndex {
-                layer: layer_index,
-                level: tile.location.level_index,
-                pixel_position: data_indices.position.to_usize("data indices start").expect("data index bug"),
-                pixel_size: data_indices.size,
-            }
-        })
-    }*/
+                let block = crate::block::BlockIndex {
+                    layer: layer_index,
+                    level: tile.location.level_index,
+                    pixel_position: data_indices
+                        .position
+                        .to_usize("data indices start")
+                        .expect("data index bug: negative position in absolute coordinates"),
+                    pixel_size: data_indices.size,
+                };
+
+                (chunk_index, block)
+            })
+    }
+
+    /// The block indices of this header, ordered as they would appear in the file.
+    /// Convenience method that yields only BlockIndex without chunk indices.
+    ///
+    /// # Panics
+    /// Panics if tile coordinates are invalid (indicates internal library bug).
+    pub fn ordered_block_indices(
+        &self,
+        layer_index: usize,
+    ) -> impl '_ + Iterator<Item = crate::block::BlockIndex> {
+        self.enumerate_ordered_block_indices(layer_index)
+            .map(|(_, block)| block)
+    }
 
     // TODO reuse this function everywhere
     /// The default pixel resolution of a single block (tile or scan line block).
@@ -1443,5 +1462,156 @@ impl std::fmt::Debug for LayerAttributes {
 
         // debug.finish_non_exhaustive() TODO
         debug.finish()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::meta::attribute::{ChannelDescription, ChannelList, Text, SampleType};
+    use crate::compression::Compression;
+
+    /// Helper to create a minimal header for testing
+    fn make_test_header(width: usize, height: usize, blocks: BlockDescription) -> Header {
+        Header {
+            layer_size: Vec2(width, height),
+            compression: Compression::Uncompressed,
+            blocks,
+            channels: ChannelList::new(smallvec::smallvec![
+                ChannelDescription {
+                    name: Text::from("R"),
+                    sample_type: SampleType::F32,
+                    quantize_linearly: false,
+                    sampling: Vec2(1, 1),
+                },
+            ]),
+            line_order: LineOrder::Increasing,
+            own_attributes: LayerAttributes::default(),
+            shared_attributes: ImageAttributes::with_size(Vec2(width, height)),
+            chunk_count: 0,  // will be computed
+            max_samples_per_pixel: None,
+            deep: false,
+            deep_data_version: None,
+        }
+    }
+
+    // Tests for ordered_block_indices() - see DEAD_CODE_ANALYSIS.md item #5
+    mod ordered_block_indices_tests {
+        use super::*;
+
+        #[test]
+        fn scanline_blocks() {
+            // Create a 64x64 image with scanline blocks (16 lines per block for Uncompressed)
+            let header = make_test_header(64, 64, BlockDescription::ScanLines);
+
+            let blocks: Vec<_> = header.ordered_block_indices(0).collect();
+
+            // 64 / 1 = 64 blocks (uncompressed = 1 line per block)
+            assert_eq!(blocks.len(), 64, "should have 64 scanline blocks");
+
+            // Check layer index is set correctly
+            for block in &blocks {
+                assert_eq!(block.layer, 0, "layer index should be 0");
+                assert_eq!(block.level, Vec2(0, 0), "scanline should have level (0,0)");
+                assert_eq!(block.pixel_size.x(), 64, "block width should match image");
+            }
+
+            // Check blocks are in order (increasing Y)
+            for (i, block) in blocks.iter().enumerate() {
+                assert_eq!(block.pixel_position.y(), i, "block {} should be at y={}", i, i);
+            }
+        }
+
+        #[test]
+        fn tiled_blocks() {
+            // Create a 64x64 image with 32x32 tiles
+            let tiles = TileDescription {
+                tile_size: Vec2(32, 32),
+                level_mode: LevelMode::Singular,
+                rounding_mode: RoundingMode::Down,
+            };
+            let header = make_test_header(64, 64, BlockDescription::Tiles(tiles));
+
+            let blocks: Vec<_> = header.ordered_block_indices(0).collect();
+
+            // 2x2 = 4 tiles
+            assert_eq!(blocks.len(), 4, "should have 4 tiles (2x2)");
+
+            // Check all tiles have correct size
+            for block in &blocks {
+                assert_eq!(block.pixel_size, Vec2(32, 32), "each tile should be 32x32");
+                assert_eq!(block.layer, 0, "layer index should be 0");
+            }
+        }
+
+        #[test]
+        fn enumerate_includes_chunk_index() {
+            let header = make_test_header(64, 32, BlockDescription::ScanLines);
+
+            let enumerated: Vec<_> = header.enumerate_ordered_block_indices(2).collect();
+
+            // Check chunk indices are sequential
+            for (i, (chunk_idx, block)) in enumerated.iter().enumerate() {
+                assert_eq!(*chunk_idx, i, "chunk index should be sequential");
+                assert_eq!(block.layer, 2, "layer index should be 2");
+            }
+        }
+
+        #[test]
+        fn decreasing_line_order() {
+            let mut header = make_test_header(64, 4, BlockDescription::ScanLines);
+            header.line_order = LineOrder::Decreasing;
+
+            let blocks: Vec<_> = header.ordered_block_indices(0).collect();
+
+            // With decreasing order, first block should be at bottom
+            assert_eq!(blocks.len(), 4, "should have 4 scanline blocks");
+            assert_eq!(blocks[0].pixel_position.y(), 3, "first block should be at y=3 (bottom)");
+            assert_eq!(blocks[3].pixel_position.y(), 0, "last block should be at y=0 (top)");
+        }
+
+        #[test]
+        fn mipmap_levels() {
+            // Create a 64x64 image with mipmaps
+            let tiles = TileDescription {
+                tile_size: Vec2(32, 32),
+                level_mode: LevelMode::MipMap,
+                rounding_mode: RoundingMode::Down,
+            };
+            let header = make_test_header(64, 64, BlockDescription::Tiles(tiles));
+
+            let blocks: Vec<_> = header.ordered_block_indices(0).collect();
+
+            // Level 0: 64x64 / 32x32 = 2x2 = 4 tiles
+            // Level 1: 32x32 / 32x32 = 1x1 = 1 tile
+            // Level 2: 16x16 / 32x32 = 1x1 = 1 tile (rounds up to 1)
+            // ... more levels
+            assert!(blocks.len() >= 6, "should have multiple mipmap level tiles");
+
+            // Check we have blocks at different levels
+            let level_0_blocks: Vec<_> = blocks.iter().filter(|b| b.level == Vec2(0, 0)).collect();
+            let level_1_blocks: Vec<_> = blocks.iter().filter(|b| b.level == Vec2(1, 1)).collect();
+
+            assert_eq!(level_0_blocks.len(), 4, "level 0 should have 4 tiles");
+            assert!(!level_1_blocks.is_empty(), "should have level 1 tiles");
+        }
+
+        #[test]
+        fn different_layer_indices() {
+            let header = make_test_header(32, 32, BlockDescription::ScanLines);
+
+            let layer_0: Vec<_> = header.ordered_block_indices(0).collect();
+            let layer_5: Vec<_> = header.ordered_block_indices(5).collect();
+
+            // Same number of blocks, different layer indices
+            assert_eq!(layer_0.len(), layer_5.len(), "same block count for same header");
+
+            for (b0, b5) in layer_0.iter().zip(layer_5.iter()) {
+                assert_eq!(b0.layer, 0, "layer 0 blocks should have layer=0");
+                assert_eq!(b5.layer, 5, "layer 5 blocks should have layer=5");
+                assert_eq!(b0.pixel_position, b5.pixel_position, "positions should match");
+                assert_eq!(b0.pixel_size, b5.pixel_size, "sizes should match");
+            }
+        }
     }
 }

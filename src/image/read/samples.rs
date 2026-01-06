@@ -32,13 +32,26 @@ impl ReadFlatSamples {
         ReadAllLevels { read_samples: self }
     }
 
-    // TODO pub fn specific_resolution_level<F: Fn(&[Vec2<usize>])->usize >(self, select_level: F) -> ReadLevelBy<Self> { ReadAllLevels { read_samples: self } }
+    // Future enhancement: Select a specific resolution level by user-provided function.
+    // The closure receives available level resolutions and returns the index to read.
+    // Useful for LOD systems where you want a specific mip level.
+    // Implementation requires a new `ReadSpecificLevel<S, F>` struct.
+    // See: DEAD_CODE_ANALYSIS.md item #9
+    // pub fn specific_resolution_level<F>(self, select_level: F) -> ReadSpecificLevel<Self, F>
+    // where F: Fn(&[Vec2<usize>]) -> usize
+    // { ReadSpecificLevel { read_samples: self, select_level } }
 }
 
-/*pub struct AnySamplesReader { TODO
-    resolution: Vec2<usize>,
-    samples: DeepAndFlatSamples
-}*/
+// Future: AnySamplesReader for reading either deep or flat samples.
+// The DeepAndFlatSamples enum is now implemented in crate::image::mod.rs.
+// Implementing the reader requires:
+// 1. Detecting header.deep to choose storage type
+// 2. Routing blocks to the appropriate reader
+// See: DEAD_CODE_ANALYSIS.md item #8
+// pub struct AnySamplesReader {
+//     resolution: Vec2<usize>,
+//     samples: DeepAndFlatSamples,
+// }
 
 /// Processes pixel blocks from a file and accumulates them into a grid of samples, for example "Red" or "Alpha".
 #[derive(Debug, Clone, PartialEq)]

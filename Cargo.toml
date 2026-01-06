@@ -43,6 +43,10 @@ default = ["rayon"]
 # rayon is used for parallel compression
 rayon = ["dep:rayon-core"]
 
+# Enable test utilities (validate_results module) for integration tests.
+# Not for production use. See DEAD_CODE_ANALYSIS.md item #11.
+test-utils = []
+
 [[example]]
 name = "7_write_raw_blocks"
 required-features = ["rayon"]

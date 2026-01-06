@@ -86,8 +86,11 @@ impl<Pixel> PixelVec<Pixel> {
     }
 }
 
+// Test-only validation support
+#[cfg(any(test, feature = "test-utils"))]
 use crate::image::validate_results::{ValidateResult, ValidationResult};
 
+#[cfg(any(test, feature = "test-utils"))]
 impl<Px> ValidateResult for PixelVec<Px>
 where
     Px: ValidateResult,

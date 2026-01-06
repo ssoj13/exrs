@@ -57,7 +57,14 @@ pub trait ReadChannels<'s> {
         }
     }
 
-    // TODO pub fn all_valid_layers(self) -> ReadAllValidLayers<Self> { ReadAllValidLayers { read_channels: self } }
+    // Future enhancement: Read all layers that match channel requirements, skipping invalid ones.
+    // Unlike all_layers() which fails if any layer is invalid, this would skip problematic layers.
+    // Useful for robust reading of files with mixed layer types.
+    // Implementation requires a new `ReadAllValidLayers<C>` struct using flat_map.
+    // See: DEAD_CODE_ANALYSIS.md item #10
+    // pub fn all_valid_layers(self) -> ReadAllValidLayers<Self> {
+    //     ReadAllValidLayers { read_channels: self }
+    // }
 }
 
 /// Processes pixel blocks from a file and accumulates them into a list of layers.

@@ -13,6 +13,7 @@ use crate::io::*;
 use crate::math::*;
 use crate::meta::header::Header;
 use ::smallvec::SmallVec;
+use std::cmp::Ordering;
 use std::collections::HashSet;
 use std::convert::TryFrom;
 use std::fs::File;
@@ -102,29 +103,29 @@ pub enum BlockDescription {
     Tiles(TileDescription),
 }
 
-/*impl TileIndices {
-    pub fn cmp(&self, other: &Self) -> Ordering {
-        match self.location.level_index.1.cmp(&other.location.level_index.1) {
-            Ordering::Equal => {
-                match self.location.level_index.0.cmp(&other.location.level_index.0) {
-                    Ordering::Equal => {
-                        match self.location.tile_index.1.cmp(&other.location.tile_index.1) {
-                            Ordering::Equal => {
-                                self.location.tile_index.0.cmp(&other.location.tile_index.0)
-                            },
-
-                            other => other,
-                        }
-                    },
-
-                    other => other
-                }
-            },
-
-            other => other
-        }
+/// Implements row-major ordering for tiles across mip/rip map levels.
+/// Order: Y level -> X level -> Y tile -> X tile.
+/// This enables efficient `tiles.sort()` instead of custom sorting.
+/// See: DEAD_CODE_ANALYSIS.md item #1
+impl Ord for TileIndices {
+    fn cmp(&self, other: &Self) -> Ordering {
+        // First compare by Y level index
+        self.location.level_index.y()
+            .cmp(&other.location.level_index.y())
+            // Then by X level index
+            .then_with(|| self.location.level_index.x().cmp(&other.location.level_index.x()))
+            // Then by Y tile index (row-major within level)
+            .then_with(|| self.location.tile_index.y().cmp(&other.location.tile_index.y()))
+            // Finally by X tile index
+            .then_with(|| self.location.tile_index.x().cmp(&other.location.tile_index.x()))
     }
-}*/
+}
+
+impl PartialOrd for TileIndices {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
 
 impl BlockDescription {
     /// Whether this image is tiled. If false, this image is divided into scan line blocks.
@@ -864,5 +865,98 @@ mod test {
         assert_eq!(low_requirements.file_format_version, 2);
         assert_eq!(low_requirements.has_deep_data, false);
         assert_eq!(low_requirements.has_multiple_layers, true);
+    }
+
+    // Tests for TileIndices Ord implementation - see DEAD_CODE_ANALYSIS.md item #1
+    mod tile_indices_ord_tests {
+        use super::*;
+        use crate::block::chunk::TileCoordinates;
+
+        fn make_tile(level: (usize, usize), tile: (usize, usize)) -> TileIndices {
+            TileIndices {
+                location: TileCoordinates {
+                    level_index: Vec2(level.0, level.1),
+                    tile_index: Vec2(tile.0, tile.1),
+                },
+                size: Vec2(32, 32),
+            }
+        }
+
+        #[test]
+        fn level_y_ordering() {
+            // Y level index has highest priority
+            let tile_level_0 = make_tile((0, 0), (5, 5));
+            let tile_level_1 = make_tile((0, 1), (0, 0));
+            let tile_level_2 = make_tile((0, 2), (0, 0));
+
+            assert!(tile_level_0 < tile_level_1);
+            assert!(tile_level_1 < tile_level_2);
+            assert!(tile_level_0 < tile_level_2);
+        }
+
+        #[test]
+        fn level_x_ordering() {
+            // X level index is second priority (same Y level)
+            let tile_lx0 = make_tile((0, 1), (5, 5));
+            let tile_lx1 = make_tile((1, 1), (0, 0));
+            let tile_lx2 = make_tile((2, 1), (0, 0));
+
+            assert!(tile_lx0 < tile_lx1);
+            assert!(tile_lx1 < tile_lx2);
+        }
+
+        #[test]
+        fn tile_y_ordering() {
+            // Y tile index is third priority (row-major within level)
+            let tile_y0 = make_tile((1, 1), (5, 0));
+            let tile_y1 = make_tile((1, 1), (0, 1));
+            let tile_y2 = make_tile((1, 1), (0, 2));
+
+            assert!(tile_y0 < tile_y1, "tile at y=0 should come before y=1");
+            assert!(tile_y1 < tile_y2);
+        }
+
+        #[test]
+        fn tile_x_ordering() {
+            // X tile index is lowest priority (columns within same row)
+            let tile_x0 = make_tile((1, 1), (0, 5));
+            let tile_x1 = make_tile((1, 1), (1, 5));
+            let tile_x2 = make_tile((1, 1), (2, 5));
+
+            assert!(tile_x0 < tile_x1);
+            assert!(tile_x1 < tile_x2);
+        }
+
+        #[test]
+        fn equality() {
+            let tile1 = make_tile((1, 2), (3, 4));
+            let tile2 = make_tile((1, 2), (3, 4));
+            let tile3 = make_tile((1, 2), (3, 5));
+
+            assert_eq!(tile1.cmp(&tile2), Ordering::Equal);
+            assert_ne!(tile1.cmp(&tile3), Ordering::Equal);
+        }
+
+        #[test]
+        fn sortable() {
+            // Verify tiles can be sorted correctly
+            let mut tiles = vec![
+                make_tile((0, 1), (0, 0)),  // level (0,1)
+                make_tile((0, 0), (1, 1)),  // level (0,0), tile (1,1)
+                make_tile((0, 0), (0, 1)),  // level (0,0), tile (0,1) - row 1
+                make_tile((0, 0), (1, 0)),  // level (0,0), tile (1,0) - row 0
+                make_tile((0, 0), (0, 0)),  // level (0,0), tile (0,0) - first
+            ];
+
+            tiles.sort();
+
+            // Expected order within level (0,0): row-major
+            // (0,0) -> (1,0) -> (0,1) -> (1,1), then level (0,1)
+            assert_eq!(tiles[0], make_tile((0, 0), (0, 0)));
+            assert_eq!(tiles[1], make_tile((0, 0), (1, 0)));
+            assert_eq!(tiles[2], make_tile((0, 0), (0, 1)));
+            assert_eq!(tiles[3], make_tile((0, 0), (1, 1)));
+            assert_eq!(tiles[4], make_tile((0, 1), (0, 0)));
+        }
     }
 }

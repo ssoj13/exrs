@@ -765,18 +765,73 @@ impl ChannelList {
             .ok()
     }
 
-    // TODO use this in compression methods
-    /*pub fn pixel_section_indices(&self, bounds: IntegerBounds) -> impl '_ + Iterator<Item=(&Channel, usize, usize)> {
-        (bounds.position.y() .. bounds.end().y()).flat_map(|y| {
-            self.list
-                .filter(|channel| mod_p(y, usize_to_i32(channel.sampling.1)) == 0)
-                .flat_map(|channel|{
-                    (bounds.position.x() .. bounds.end().x())
-                        .filter(|x| mod_p(*x, usize_to_i32(channel.sampling.0)) == 0)
-                        .map(|x| (channel, x, y))
-                })
+    /// Iterate over all pixel positions that have samples for each channel,
+    /// accounting for subsampling (e.g., YUV 4:2:0 where chroma channels
+    /// have fewer samples than luma).
+    ///
+    /// Returns tuples of (channel, x, y) for each position that contains
+    /// an actual sample. For non-subsampled channels (sampling = 1,1),
+    /// yields all positions. For subsampled channels, yields only
+    /// positions where `x % sampling.x == 0` and `y % sampling.y == 0`.
+    ///
+    /// # Arguments
+    /// * `bounds` - The pixel rectangle to iterate over
+    ///
+    /// # Example
+    /// ```ignore
+    /// for (channel, x, y) in channel_list.pixel_section_indices(bounds) {
+    ///     // Process sample at (x, y) for this channel
+    /// }
+    /// ```
+    ///
+    /// # Note
+    /// This is essential for correct subsampling support in compression.
+    /// See: DEAD_CODE_ANALYSIS.md item #7
+    pub fn pixel_section_indices(
+        &self,
+        bounds: IntegerBounds,
+    ) -> impl Iterator<Item = (&ChannelDescription, i32, i32)> + '_ {
+        let y_start = bounds.position.y();
+        let y_end = bounds.end().y();
+        let x_start = bounds.position.x();
+        let x_end = bounds.end().x();
+
+        (y_start..y_end).flat_map(move |y| {
+            self.list.iter().flat_map(move |channel| {
+                // Check if this line has samples for this channel
+                let y_sampling = channel.sampling.y() as i32;
+                if y_sampling > 0 && mod_p(y, y_sampling) != 0 {
+                    // This line is subsampled out for this channel
+                    return None.into_iter().flatten();
+                }
+
+                // Yield all x positions that have samples
+                let x_sampling = channel.sampling.x() as i32;
+                Some(
+                    (x_start..x_end)
+                        .filter(move |&x| x_sampling <= 0 || mod_p(x, x_sampling) == 0)
+                        .map(move |x| (channel, x, y)),
+                )
+                .into_iter()
+                .flatten()
+            })
         })
-    }*/
+    }
+}
+
+/// Compute positive modulo (always returns non-negative result).
+/// This is needed for subsampling calculations where coordinates can be negative.
+#[inline]
+fn mod_p(x: i32, y: i32) -> i32 {
+    if y == 0 {
+        return 0;
+    }
+    let rem = x % y;
+    if rem < 0 {
+        rem + y
+    } else {
+        rem
+    }
 }
 
 impl BlockType {
@@ -2438,6 +2493,143 @@ mod test {
                     film24_code
                 );
             }
+        }
+    }
+
+    // Tests for pixel_section_indices() - see DEAD_CODE_ANALYSIS.md item #7
+    mod pixel_section_indices_tests {
+        use super::*;
+
+        fn make_channel(name: &str, sampling: Vec2<usize>) -> ChannelDescription {
+            ChannelDescription {
+                name: Text::from(name),
+                sample_type: SampleType::F32,
+                quantize_linearly: false,
+                sampling,
+            }
+        }
+
+        #[test]
+        fn no_subsampling() {
+            // All channels at 1:1 sampling - every pixel has samples
+            let channels = ChannelList::new(smallvec::smallvec![
+                make_channel("R", Vec2(1, 1)),
+                make_channel("G", Vec2(1, 1)),
+                make_channel("B", Vec2(1, 1)),
+            ]);
+
+            let bounds = IntegerBounds::new(Vec2(0, 0), Vec2(4, 4));
+            let pixels: Vec<_> = channels.pixel_section_indices(bounds).collect();
+
+            // 4x4 = 16 pixels × 3 channels = 48 samples
+            assert_eq!(pixels.len(), 48, "4x4 image with 3 channels");
+
+            // Check first pixel has all 3 channels
+            let first_pixel: Vec<_> = pixels.iter().filter(|(_, x, y)| *x == 0 && *y == 0).collect();
+            assert_eq!(first_pixel.len(), 3, "first pixel should have all 3 channels");
+        }
+
+        #[test]
+        fn yuv_420_subsampling() {
+            // YUV 4:2:0 - chroma at half resolution in both dimensions
+            let channels = ChannelList::new(smallvec::smallvec![
+                make_channel("Y", Vec2(1, 1)),  // luma: every pixel
+                make_channel("U", Vec2(2, 2)),  // chroma: every 2nd pixel in both dims
+                make_channel("V", Vec2(2, 2)),
+            ]);
+
+            let bounds = IntegerBounds::new(Vec2(0, 0), Vec2(4, 4));
+            let pixels: Vec<_> = channels.pixel_section_indices(bounds).collect();
+
+            // Y: 4×4 = 16 samples
+            // U: 2×2 = 4 samples (at positions 0,0; 0,2; 2,0; 2,2)
+            // V: 2×2 = 4 samples
+            // Total: 24 samples
+            assert_eq!(pixels.len(), 24, "YUV 4:2:0 should have 24 samples for 4x4");
+
+            // Check Y channel has all 16 positions
+            let y_samples: Vec<_> = pixels.iter().filter(|(ch, _, _)| ch.name.bytes() == b"Y").collect();
+            assert_eq!(y_samples.len(), 16, "Y channel should have 16 samples");
+
+            // Check U channel has only 4 positions
+            let u_samples: Vec<_> = pixels.iter().filter(|(ch, _, _)| ch.name.bytes() == b"U").collect();
+            assert_eq!(u_samples.len(), 4, "U channel should have 4 samples");
+
+            // Verify U samples are at correct positions (multiples of 2)
+            for (_, x, y) in u_samples {
+                assert_eq!(*x % 2, 0, "U sample x={} should be even", x);
+                assert_eq!(*y % 2, 0, "U sample y={} should be even", y);
+            }
+        }
+
+        #[test]
+        fn negative_position_bounds() {
+            // Test with negative starting position (common in OpenEXR)
+            let channels = ChannelList::new(smallvec::smallvec![
+                make_channel("R", Vec2(1, 1)),
+                make_channel("G", Vec2(2, 2)),  // subsampled
+            ]);
+
+            let bounds = IntegerBounds::new(Vec2(-4, -4), Vec2(4, 4));
+            let pixels: Vec<_> = channels.pixel_section_indices(bounds).collect();
+
+            // R: 4×4 = 16 samples
+            // G: positions at -4,-4; -4,-2; -2,-4; -2,-2; 0,-4; etc.
+            // For x in -4..0: -4, -2 (2 values, both even)
+            // For y in -4..0: -4, -2 (2 values, both even)
+            // G: 2×2 = 4 samples
+            assert_eq!(pixels.len(), 20, "negative bounds should work correctly");
+
+            // Verify G samples have even coordinates (even negatives)
+            let g_samples: Vec<_> = pixels.iter().filter(|(ch, _, _)| ch.name.bytes() == b"G").collect();
+            for (_, x, y) in g_samples {
+                assert_eq!(x.rem_euclid(2), 0, "G sample x={} should be even", x);
+                assert_eq!(y.rem_euclid(2), 0, "G sample y={} should be even", y);
+            }
+        }
+
+        #[test]
+        fn single_pixel_bounds() {
+            let channels = ChannelList::new(smallvec::smallvec![
+                make_channel("R", Vec2(1, 1)),
+            ]);
+
+            let bounds = IntegerBounds::new(Vec2(5, 10), Vec2(1, 1));
+            let pixels: Vec<_> = channels.pixel_section_indices(bounds).collect();
+
+            assert_eq!(pixels.len(), 1, "single pixel should have 1 sample");
+            assert_eq!(pixels[0].1, 5, "x coordinate");
+            assert_eq!(pixels[0].2, 10, "y coordinate");
+        }
+
+        #[test]
+        fn empty_bounds() {
+            let channels = ChannelList::new(smallvec::smallvec![
+                make_channel("R", Vec2(1, 1)),
+            ]);
+
+            let bounds = IntegerBounds::new(Vec2(0, 0), Vec2(0, 0));
+            let pixels: Vec<_> = channels.pixel_section_indices(bounds).collect();
+
+            assert_eq!(pixels.len(), 0, "empty bounds should yield no samples");
+        }
+
+        #[test]
+        fn mixed_sampling_rates() {
+            // Different sampling rates for different channels
+            let channels = ChannelList::new(smallvec::smallvec![
+                make_channel("A", Vec2(1, 1)),  // every pixel
+                make_channel("B", Vec2(2, 1)),  // every 2nd column, every row
+                make_channel("C", Vec2(1, 3)),  // every column, every 3rd row
+            ]);
+
+            let bounds = IntegerBounds::new(Vec2(0, 0), Vec2(6, 6));
+            let pixels: Vec<_> = channels.pixel_section_indices(bounds).collect();
+
+            // A: 6×6 = 36
+            // B: 3×6 = 18 (columns 0,2,4)
+            // C: 6×2 = 12 (rows 0,3)
+            assert_eq!(pixels.len(), 66, "mixed sampling should total 66 samples");
         }
     }
 }

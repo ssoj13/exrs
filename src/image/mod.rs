@@ -239,12 +239,82 @@ pub struct RipMaps<Samples> {
     pub level_count: Vec2<usize>,
 }
 
-// Future enhancement: union type for mixed deep/flat images
-// #[derive(Clone, PartialEq)]
-// pub enum DeepAndFlatSamples {
-//     Deep(DeepSamples),
-//     Flat(FlatSamples)
-// }
+/// Union type for reading either deep or flat samples from a file.
+/// This enables unified handling of OpenEXR files regardless of their data type.
+/// 
+/// # Use Cases
+/// - Reading files without knowing in advance if they contain deep data
+/// - Writing code that handles both deep and flat images
+/// - Migration paths from flat to deep pipelines
+///
+/// # See Also
+/// - [`FlatSamples`] for non-deep pixel data
+/// - [`crate::image::deep::DeepSamples`] for deep pixel data  
+/// - DEAD_CODE_ANALYSIS.md item #8 - this was an unfinished feature, now completed.
+#[derive(Clone, PartialEq, Debug)]
+pub enum DeepAndFlatSamples {
+    /// Deep samples with variable sample counts per pixel.
+    Deep(crate::image::deep::DeepSamples),
+    
+    /// Flat samples with exactly one value per pixel.
+    Flat(FlatSamples),
+}
+
+impl DeepAndFlatSamples {
+    /// Returns `true` if this contains deep samples.
+    pub fn is_deep(&self) -> bool {
+        matches!(self, Self::Deep(_))
+    }
+    
+    /// Returns `true` if this contains flat samples.
+    pub fn is_flat(&self) -> bool {
+        matches!(self, Self::Flat(_))
+    }
+    
+    /// Returns a reference to the deep samples, if this is deep data.
+    pub fn as_deep(&self) -> Option<&crate::image::deep::DeepSamples> {
+        match self {
+            Self::Deep(d) => Some(d),
+            _ => None,
+        }
+    }
+    
+    /// Returns a reference to the flat samples, if this is flat data.
+    pub fn as_flat(&self) -> Option<&FlatSamples> {
+        match self {
+            Self::Flat(f) => Some(f),
+            _ => None,
+        }
+    }
+    
+    /// Converts into deep samples, returning `None` if this is flat data.
+    pub fn into_deep(self) -> Option<crate::image::deep::DeepSamples> {
+        match self {
+            Self::Deep(d) => Some(d),
+            _ => None,
+        }
+    }
+    
+    /// Converts into flat samples, returning `None` if this is deep data.
+    pub fn into_flat(self) -> Option<FlatSamples> {
+        match self {
+            Self::Flat(f) => Some(f),
+            _ => None,
+        }
+    }
+}
+
+impl From<crate::image::deep::DeepSamples> for DeepAndFlatSamples {
+    fn from(deep: crate::image::deep::DeepSamples) -> Self {
+        Self::Deep(deep)
+    }
+}
+
+impl From<FlatSamples> for DeepAndFlatSamples {
+    fn from(flat: FlatSamples) -> Self {
+        Self::Flat(flat)
+    }
+}
 
 /// A vector of non-deep values (one value per pixel per channel).
 /// Stores row after row in a single vector.
@@ -277,6 +347,7 @@ use crate::block::samples::Sample;
 use crate::block::samples::*;
 use crate::error::Result;
 use crate::image::recursive::{IntoRecursive, NoneMore, Recursive};
+#[cfg(any(test, feature = "test-utils"))]
 use crate::image::validate_results::ValidationOptions;
 use crate::image::write::channels::*;
 use crate::image::write::layers::WritableLayers;
@@ -973,7 +1044,16 @@ impl std::fmt::Debug for FlatSamples {
 
 /// Compare the result of a round trip test with the original method.
 /// Supports lossy compression methods.
-// #[cfg(test)] TODO do not ship this code
+///
+/// NOTE: This module is for testing only and not part of the public API.
+/// It provides approximate comparison for lossy compression validation.
+// Fix: Gate test utilities with #[cfg(test)] to prevent shipping to production.
+// See: DEAD_CODE_ANALYSIS.md item #11
+// Test utilities for comparing images with tolerance for lossy compression.
+// Gated to exclude from production builds unless explicitly enabled.
+// Enable via: cargo test --features test-utils
+// See: DEAD_CODE_ANALYSIS.md item #11
+#[cfg(any(test, feature = "test-utils"))]
 pub mod validate_results {
     use crate::block::samples::IntoNativeSample;
     use crate::image::write::samples::WritableSamples;
@@ -1819,5 +1899,49 @@ pub mod validate_results {
                 compression
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod deep_and_flat_tests {
+    use super::*;
+    use crate::image::deep::DeepSamples;
+
+    #[test]
+    fn flat_samples_conversion() {
+        let flat = FlatSamples::F32(vec![1.0, 2.0, 3.0]);
+        let unified: DeepAndFlatSamples = flat.clone().into();
+        
+        assert!(unified.is_flat());
+        assert!(!unified.is_deep());
+        assert!(unified.as_flat().is_some());
+        assert!(unified.as_deep().is_none());
+        assert_eq!(unified.into_flat(), Some(flat));
+    }
+
+    #[test]
+    fn deep_samples_conversion() {
+        let deep = DeepSamples::new(2, 2);
+        let unified: DeepAndFlatSamples = deep.clone().into();
+        
+        assert!(unified.is_deep());
+        assert!(!unified.is_flat());
+        assert!(unified.as_deep().is_some());
+        assert!(unified.as_flat().is_none());
+        
+        let result = unified.into_deep().unwrap();
+        assert_eq!(result.width, deep.width);
+        assert_eq!(result.height, deep.height);
+    }
+
+    #[test]
+    fn into_wrong_type_returns_none() {
+        let flat = FlatSamples::F32(vec![1.0]);
+        let unified: DeepAndFlatSamples = flat.into();
+        assert!(unified.into_deep().is_none());
+
+        let deep = DeepSamples::new(1, 1);
+        let unified: DeepAndFlatSamples = deep.into();
+        assert!(unified.into_flat().is_none());
     }
 }
