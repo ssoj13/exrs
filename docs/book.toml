@@ -1,0 +1,26 @@
+[book]
+authors = ["Johannes Vollmer", "Contributors"]
+language = "en"
+multilingual = false
+src = "src"
+title = "EXRS - Rust OpenEXR Library"
+description = "Documentation for the exrs crate - 100% safe Rust implementation of OpenEXR"
+
+[build]
+build-dir = "book"
+create-missing = false
+
+[output.html]
+default-theme = "rust"
+preferred-dark-theme = "ayu"
+git-repository-url = "https://github.com/johannesvollmer/exrs"
+edit-url-template = "https://github.com/johannesvollmer/exrs/edit/master/docs/{path}"
+
+[output.html.fold]
+enable = true
+level = 1
+
+[output.html.search]
+enable = true
+limit-results = 30
+use-hierarchical-categories = true
