@@ -1,7 +1,6 @@
 [book]
 authors = ["Johannes Vollmer", "Contributors"]
 language = "en"
-multilingual = false
 src = "src"
 title = "EXRS - Rust OpenEXR Library"
 description = "Documentation for the exrs crate - 100% safe Rust implementation of OpenEXR"
@@ -23,4 +22,3 @@ level = 1
 [output.html.search]
 enable = true
 limit-results = 30
-use-hierarchical-categories = true

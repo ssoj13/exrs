@@ -114,7 +114,7 @@ exrs/
 
 ## Key Abstractions
 
-### Image<Layers>
+### Image\<Layers\>
 
 The top-level container:
 
@@ -129,7 +129,7 @@ pub struct Image<Layers> {
 - `Layer<Channels>` - Single layer
 - `Layers<Channels>` (SmallVec) - Multiple layers
 
-### Layer<Channels>
+### Layer\<Channels\>
 
 A single image layer:
 
