@@ -129,6 +129,7 @@ impl ViewerHandler {
                 ViewerMsg::FitToWindow => self.fit_to_window(),
                 ViewerMsg::Home => self.home(),
                 ViewerMsg::SetViewport(size) => self.viewport = size,
+                ViewerMsg::Request3DData => self.send_3d_data(),
             }
         }
 
@@ -821,6 +822,81 @@ impl ViewerHandler {
             zoom: self.zoom,
             pan: self.pan,
         });
+    }
+    
+    /// Send depth data for 3D visualization.
+    fn send_3d_data(&self) {
+        let Some(image) = &self.image else {
+            return;
+        };
+        
+        // Extract depth channel data
+        let (width, height, depth) = match image {
+            LoadedImage::Flat(flat) => {
+                let Some(layer) = flat.layer_data.first() else {
+                    return;
+                };
+                let w = layer.size.x();
+                let h = layer.size.y();
+                
+                // Try to find Z/depth channel, or use first channel
+                let channel = layer.channel_data.list.iter()
+                    .find(|c| c.name.eq_case_insensitive("z") 
+                           || c.name.eq_case_insensitive("depth"))
+                    .or_else(|| layer.channel_data.list.first());
+                
+                let Some(ch) = channel else {
+                    return;
+                };
+                
+                let depth: Vec<f32> = match &ch.sample_data {
+                    FlatSamples::F32(data) => data.clone(),
+                    FlatSamples::F16(data) => data.iter().map(|v| v.to_f32()).collect(),
+                    FlatSamples::U32(data) => data.iter().map(|&v| v as f32).collect(),
+                };
+                
+                (w, h, depth)
+            }
+            LoadedImage::Deep(deep) => {
+                let w = deep.layer_data.size.x();
+                let h = deep.layer_data.size.y();
+                
+                // Get first channel's DeepSamples (all channels share the same structure)
+                let Some(first_ch) = deep.layer_data.channel_data.list.first() else {
+                    return;
+                };
+                let samples = &first_ch.sample_data;
+                
+                // For deep data, use min depth per pixel
+                // Find Z channel index in the deep samples
+                let z_idx = samples.channels.iter()
+                    .position(|c| matches!(c, crate::image::deep::DeepChannelData::F32(_)))
+                    .unwrap_or(0);
+                
+                let mut depth = vec![0.0f32; w * h];
+                
+                for pixel_idx in 0..(w * h) {
+                    let (start, end) = samples.sample_range(pixel_idx);
+                    if start >= end {
+                        continue;
+                    }
+                    
+                    if let crate::image::deep::DeepChannelData::F32(z_data) = &samples.channels[z_idx] {
+                        let min_z = z_data[start..end].iter()
+                            .copied()
+                            .filter(|z| z.is_finite())
+                            .fold(f32::MAX, f32::min);
+                        if min_z < f32::MAX {
+                            depth[pixel_idx] = min_z;
+                        }
+                    }
+                }
+                
+                (w, h, depth)
+            }
+        };
+        
+        self.send(ViewerEvent::Data3DReady { width, height, depth });
     }
 }
 

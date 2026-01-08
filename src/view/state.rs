@@ -64,13 +64,7 @@ impl ChannelMode {
     }
 }
 
-/// Display mode (2D vs 3D).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum DisplayMode {
-    #[default]
-    View2D,
-    View3D,
-}
+
 
 /// Deep data visualization mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -190,7 +184,7 @@ pub struct ViewerState {
     pub current_channel: String,
 
     // Display settings
-    pub display_mode: DisplayMode,
+    pub show_3d: bool,
     pub channel_mode: ChannelMode,
     pub deep_mode: DeepMode,
     pub depth_mode: DepthMode,
@@ -240,7 +234,7 @@ impl Default for ViewerState {
             channels: Vec::new(),
             current_channel: String::new(),
 
-            display_mode: DisplayMode::View2D,
+            show_3d: false,
             channel_mode: ChannelMode::Color,
             deep_mode: DeepMode::Flattened,
             depth_mode: DepthMode::AutoNormalize,

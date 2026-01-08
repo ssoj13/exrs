@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 use egui::{Color32, ColorImage, TextureHandle, TextureOptions, Vec2};
@@ -9,8 +10,22 @@ use egui::{Color32, ColorImage, TextureHandle, TextureOptions, Vec2};
 use crate::view::handler::ViewerHandler;
 use crate::view::messages::{Generation, ViewerEvent, ViewerMsg};
 use crate::view::state::{
-    ChannelMode, DeepMode, DepthMode, DisplayMode, View3DMode, ViewerState,
+    ChannelMode, DeepMode, DepthMode, View3DMode, ViewerState,
 };
+
+#[cfg(feature = "view-3d")]
+use crate::view::view3d::View3D;
+
+#[cfg(feature = "view-3d")]
+use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
+
+/// Dock panel tabs.
+#[cfg(feature = "view-3d")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DockTab {
+    View2D,
+    View3D,
+}
 
 /// Viewer configuration.
 #[derive(Debug, Clone, Default)]
@@ -28,12 +43,27 @@ pub struct ViewerApp {
     texture: Option<TextureHandle>,
     state: ViewerState,
     generation: Generation,
+    
+    #[cfg(feature = "view-3d")]
+    view3d: Option<Arc<Mutex<View3D>>>,
+    
+    #[cfg(feature = "view-3d")]
+    dock_state: DockState<DockTab>,
+}
+
+impl std::fmt::Debug for ViewerApp {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ViewerApp")
+            .field("state", &self.state)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
 }
 
 impl ViewerApp {
     /// Create new viewer app.
     pub fn new(
-        _cc: &eframe::CreationContext<'_>,
+        cc: &eframe::CreationContext<'_>,
         image_path: Option<PathBuf>,
         config: ViewerConfig,
     ) -> Self {
@@ -45,6 +75,14 @@ impl ViewerApp {
             let handler = ViewerHandler::new(rx_in_worker, tx_to_ui, verbose);
             handler.run();
         });
+        
+        // Init 3D viewer with glow context
+        #[cfg(feature = "view-3d")]
+        let view3d = cc.gl.as_ref().map(|gl| Arc::new(Mutex::new(View3D::new(gl.clone()))));
+        
+        // Init dock state - just 2D view by default
+        #[cfg(feature = "view-3d")]
+        let dock_state = DockState::new(vec![DockTab::View2D]);
 
         let app = Self {
             tx: tx_to_worker,
@@ -53,6 +91,10 @@ impl ViewerApp {
             texture: None,
             state: ViewerState::default(),
             generation: 0,
+            #[cfg(feature = "view-3d")]
+            view3d,
+            #[cfg(feature = "view-3d")]
+            dock_state,
         };
 
         if let Some(path) = image_path {
@@ -140,10 +182,10 @@ impl ViewerApp {
                     if generation < self.generation {
                         continue;
                     }
-                    let image = ColorImage {
-                        size: [width, height],
-                        pixels,
-                    };
+                    let image = ColorImage::from_rgba_premultiplied(
+                        [width, height],
+                        &pixels.iter().flat_map(|c| c.to_array()).collect::<Vec<_>>(),
+                    );
                     self.texture = Some(ctx.load_texture(
                         "exr_image",
                         image,
@@ -157,6 +199,16 @@ impl ViewerApp {
                 ViewerEvent::Error(msg) => {
                     self.state.error = Some(msg);
                 }
+                #[cfg(feature = "view-3d")]
+                ViewerEvent::Data3DReady { width, height, depth } => {
+                    if let Some(view3d_arc) = &self.view3d {
+                        if let Ok(mut view3d) = view3d_arc.lock() {
+                            view3d.set_heightfield(width, height, &depth);
+                        }
+                    }
+                }
+                #[cfg(not(feature = "view-3d"))]
+                ViewerEvent::Data3DReady { .. } => {}
             }
         }
     }
@@ -238,9 +290,14 @@ impl ViewerApp {
                     ui.separator();
                 }
                 
-                // 2D/3D toggle
-                ui.selectable_value(&mut self.state.display_mode, DisplayMode::View2D, "2D");
-                ui.selectable_value(&mut self.state.display_mode, DisplayMode::View3D, "3D");
+                // 3D panel toggle
+                let was_3d = self.state.show_3d;
+                ui.checkbox(&mut self.state.show_3d, "3D");
+                
+                // Request 3D data when enabling 3D
+                if !was_3d && self.state.show_3d {
+                    self.send(ViewerMsg::Request3DData);
+                }
                 ui.separator();
 
                 // Layer selector
@@ -443,8 +500,8 @@ impl ViewerApp {
                 });
             }
 
-            // Row 3: 3D controls (if 3D mode)
-            if self.state.display_mode == DisplayMode::View3D {
+            // Row 3: 3D controls (if 3D panel shown)
+            if self.state.show_3d {
                 ui.horizontal(|ui| {
                     egui::ComboBox::from_label("3D Mode")
                         .selected_text(self.state.view_3d_mode.label())
@@ -515,6 +572,35 @@ impl ViewerApp {
         });
     }
 
+    #[cfg(feature = "view-3d")]
+    fn draw_canvas(&mut self, ctx: &egui::Context) {
+        // Sync dock state with show_3d toggle
+        self.sync_dock_with_3d_toggle();
+        
+        // Track viewport size from available space
+        let available = ctx.available_rect().size();
+        if (self.state.viewport_size[0] - available.x).abs() > 1.0
+            || (self.state.viewport_size[1] - available.y).abs() > 1.0
+        {
+            self.state.viewport_size = [available.x, available.y];
+            self.send(ViewerMsg::SetViewport(self.state.viewport_size));
+        }
+
+        // Extract dock_state to avoid double borrow
+        let mut dock_state = std::mem::replace(&mut self.dock_state, DockState::new(vec![DockTab::View2D]));
+        
+        // Render dock area
+        DockArea::new(&mut dock_state)
+            .style(Style::from_egui(ctx.style().as_ref()))
+            .show_close_buttons(false)
+            .show_tab_name_on_hover(false)
+            .show(ctx, &mut DockTabs { app: self });
+        
+        // Put dock_state back
+        self.dock_state = dock_state;
+    }
+    
+    #[cfg(not(feature = "view-3d"))]
     fn draw_canvas(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default().show(ctx, |ui| {
             let available = ui.available_size();
@@ -535,11 +621,27 @@ impl ViewerApp {
                 return;
             }
 
-            match self.state.display_mode {
-                DisplayMode::View2D => self.draw_2d_canvas(ui, available),
-                DisplayMode::View3D => self.draw_3d_canvas(ui, available),
-            }
+            self.draw_2d_canvas(ui, available);
         });
+    }
+    
+    /// Sync dock layout when 3D toggle changes.
+    #[cfg(feature = "view-3d")]
+    fn sync_dock_with_3d_toggle(&mut self) {
+        // Check if 3D tab exists
+        let has_3d = self.dock_state
+            .iter_all_tabs()
+            .any(|(_, tab)| *tab == DockTab::View3D);
+        
+        if self.state.show_3d && !has_3d {
+            // Rebuild dock with both panels: 2D left (0.6), 3D right (0.4)
+            let mut dock = DockState::new(vec![DockTab::View2D]);
+            dock.main_surface_mut().split_right(NodeIndex::root(), 0.4, vec![DockTab::View3D]);
+            self.dock_state = dock;
+        } else if !self.state.show_3d && has_3d {
+            // Remove 3D tab - rebuild dock with just 2D
+            self.dock_state = DockState::new(vec![DockTab::View2D]);
+        }
     }
 
     fn draw_2d_canvas(&mut self, ui: &mut egui::Ui, available: Vec2) {
@@ -596,26 +698,109 @@ impl ViewerApp {
 
     #[cfg(feature = "view-3d")]
     fn draw_3d_canvas(&mut self, ui: &mut egui::Ui, available: Vec2) {
-        // TODO: Implement actual 3D rendering with three-d
+        use three_d::{Event, MouseButton, PhysicalPoint};
+        
         let (rect, response) = ui.allocate_exact_size(available, egui::Sense::click_and_drag());
-
-        // Camera orbit control
-        if response.dragged() {
-            let delta = response.drag_delta();
-            self.state.camera_yaw += delta.x * 0.01;
-            self.state.camera_pitch = (self.state.camera_pitch + delta.y * 0.01)
-                .clamp(-1.5, 1.5);
+        
+        // Check if we have 3D view initialized
+        let Some(view3d_arc) = self.view3d.clone() else {
+            let painter = ui.painter_at(rect);
+            painter.rect_filled(rect, 0.0, Color32::from_gray(32));
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "3D View: No OpenGL context\n\nEnsure glow backend is enabled",
+                egui::FontId::default(),
+                Color32::GRAY,
+            );
+            return;
+        };
+        
+        // Check if 3D data is loaded
+        let has_data = if let Ok(view3d) = view3d_arc.lock() {
+            view3d.has_data()
+        } else {
+            false
+        };
+        
+        if !has_data {
+            let painter = ui.painter_at(rect);
+            painter.rect_filled(rect, 0.0, Color32::from_gray(32));
+            painter.text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                "No depth data\n\nSwitch to Z channel or load\nan image with depth",
+                egui::FontId::default(),
+                Color32::from_gray(120),
+            );
+            return;
         }
-
-        let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, 0.0, Color32::from_gray(32));
-        painter.text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "3D View (view-3d feature enabled)\n\nImplementation in progress...\n\nDrag to rotate camera",
-            egui::FontId::default(),
-            Color32::GRAY,
-        );
+        
+        // Convert egui input to three-d events
+        let mut events = Vec::new();
+        
+        if response.dragged_by(egui::PointerButton::Primary) {
+            let delta = response.drag_delta();
+            events.push(Event::MouseMotion {
+                button: Some(MouseButton::Left),
+                delta: (delta.x, delta.y),
+                position: PhysicalPoint { x: 0.0, y: 0.0 },
+                modifiers: Default::default(),
+                handled: false,
+            });
+        }
+        
+        // Scroll for zoom
+        let scroll = ui.input(|i| i.raw_scroll_delta.y);
+        if scroll.abs() > 0.1 {
+            events.push(Event::MouseWheel {
+                delta: (0.0, scroll * 0.1),
+                position: PhysicalPoint { x: 0.0, y: 0.0 },
+                modifiers: Default::default(),
+                handled: false,
+            });
+        }
+        
+        // Handle events
+        if let Ok(mut view3d) = view3d_arc.lock() {
+            view3d.handle_events(&mut events);
+            
+            // Keyboard shortcuts
+            ui.input(|i| {
+                if i.key_pressed(egui::Key::G) {
+                    view3d.toggle_grid();
+                }
+                if i.key_pressed(egui::Key::W) {
+                    view3d.toggle_wireframe();
+                }
+                if i.key_pressed(egui::Key::Home) {
+                    view3d.reset_camera();
+                }
+            });
+        }
+        
+        // Use paint callback to render three-d
+        let view3d_for_callback = view3d_arc.clone();
+        let callback = egui::PaintCallback {
+            rect,
+            callback: std::sync::Arc::new(eframe::egui_glow::CallbackFn::new(move |info, _painter| {
+                let vp = info.clip_rect_in_pixels();
+                
+                // OpenGL viewport needs absolute window coordinates
+                let viewport = three_d::Viewport {
+                    x: vp.left_px,
+                    y: vp.from_bottom_px,
+                    width: vp.width_px as u32,
+                    height: vp.height_px as u32,
+                };
+                
+                if let Ok(view3d) = view3d_for_callback.lock() {
+                    view3d.render(viewport);
+                }
+            })),
+        };
+        
+        ui.painter().add(callback);
     }
 
     #[cfg(not(feature = "view-3d"))]
@@ -660,5 +845,32 @@ impl eframe::App for ViewerApp {
         self.draw_canvas(ctx);
 
         ctx.request_repaint();
+    }
+}
+
+// === DockTabs wrapper for egui_dock ===
+
+#[cfg(feature = "view-3d")]
+pub struct DockTabs<'a> {
+    pub app: &'a mut ViewerApp,
+}
+
+#[cfg(feature = "view-3d")]
+impl<'a> TabViewer for DockTabs<'a> {
+    type Tab = DockTab;
+
+    fn title(&mut self, tab: &mut DockTab) -> egui::WidgetText {
+        match tab {
+            DockTab::View2D => "2D".into(),
+            DockTab::View3D => "3D".into(),
+        }
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, tab: &mut DockTab) {
+        let available = ui.available_size();
+        match tab {
+            DockTab::View2D => self.app.draw_2d_canvas(ui, available),
+            DockTab::View3D => self.app.draw_3d_canvas(ui, available),
+        }
     }
 }

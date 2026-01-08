@@ -1,73 +1,126 @@
 # 3D Viewer Implementation Plan
 
-## Overview
-
-EXR 3D viewer for depth/position data visualization with orbit camera controls.
-
 ## Dependencies
 
 ```toml
-[dependencies]
-# Option A: Full 3D engine integration
-three-d = "0.17"           # GPU-accelerated 3D rendering
-egui_render_three_d = "0.6" # egui + three-d bridge
-
-# Option B: Software rasterizer (no GPU deps)
-# Already have everything needed in render3d.rs
+[target.'cfg(feature = "view-3d")'.dependencies]
+three-d = "0.17"
 ```
 
-**Recommendation**: Start with Option B (software), upgrade to three-d if performance issues.
+three-d уже включает egui интеграцию через `three_d::GUI`.
 
 ## Architecture
 
 ```
 src/view/
-├── app.rs          # Main app, delegates to render3d
-├── render3d.rs     # 3D rendering logic
-└── camera.rs       # Orbit camera (extract from render3d)
+├── app.rs          # Main app, ViewMode::View3D delegates to view3d
+├── view3d.rs       # 3D scene setup, rendering, input
+└── geometry.rs     # EXR → Mesh/PointCloud conversion
 ```
 
 ## View Modes
 
-### 1. Heightfield (Z-buffer as mesh)
-- Input: Single depth channel (Z, depth, or luminance)
-- Output: Grid mesh where Z = pixel value
-- Use case: Depth passes, displacement preview
+| Mode | Input | Output |
+|------|-------|--------|
+| Heightfield | Z channel | Grid mesh, Z = depth |
+| PointCloud | Z or P.xyz | Points in 3D |
+| PositionPass | P.x, P.y, P.z | Reconstructed geometry |
 
-### 2. PointCloud
-- Input: Single channel (Z) or position (P.x, P.y, P.z)
-- Output: Points in 3D space
-- Use case: Sparse data, lidar-style viz
-
-### 3. PositionPass (P channels)
-- Input: P.x, P.y, P.z channels (world-space positions)
-- Output: Reconstructed 3D geometry
-- Use case: Position AOVs from renderers
-
-## Camera System
+## three-d Integration
 
 ```rust
-pub struct OrbitCamera {
-    pub target: Vec3,      // Look-at point
-    pub distance: f32,     // Distance from target
-    pub yaw: f32,          // Horizontal rotation (radians)
-    pub pitch: f32,        // Vertical rotation (clamped)
-    pub fov: f32,          // Field of view (degrees)
-    pub near: f32,         // Near clip
-    pub far: f32,          // Far clip
+use three_d::*;
+
+pub struct View3D {
+    context: Context,
+    camera: Camera,
+    control: OrbitControl,
+    
+    // Geometry
+    mesh: Option<Gm<Mesh, PhysicalMaterial>>,
+    points: Option<Gm<PointCloud, PointCloudMaterial>>,
+    
+    // Helpers
+    axes: Axes,
+    grid: Option<Gm<Mesh, ColorMaterial>>,
 }
 
-impl OrbitCamera {
-    // Mouse controls
-    fn rotate(&mut self, dx: f32, dy: f32);     // LMB drag
-    fn pan(&mut self, dx: f32, dy: f32);        // MMB drag
-    fn zoom(&mut self, delta: f32);             // Scroll wheel
-    fn fit_to_bounds(&mut self, bounds: AABB);  // F key
-    fn reset(&mut self);                        // Home key
+impl View3D {
+    pub fn new(context: &Context) -> Self {
+        let camera = Camera::new_perspective(
+            Viewport::new_at_origo(1, 1),
+            vec3(0.0, 2.0, 4.0),  // position
+            vec3(0.0, 0.0, 0.0),  // target
+            vec3(0.0, 1.0, 0.0),  // up
+            degrees(45.0),        // fov
+            0.1, 100.0,           // near, far
+        );
+        
+        let control = OrbitControl::new(
+            camera.target(),
+            1.0,  // min distance
+            100.0 // max distance
+        );
+        
+        Self { context, camera, control, mesh: None, points: None, axes: Axes::new(&context, 0.1, 1.0), grid: None }
+    }
     
-    // Matrices
-    fn view_matrix(&self) -> Mat4;
-    fn proj_matrix(&self, aspect: f32) -> Mat4;
+    pub fn handle_events(&mut self, frame_input: &FrameInput) {
+        self.control.handle_events(&mut self.camera, &frame_input.events);
+    }
+    
+    pub fn render(&self, target: &RenderTarget) {
+        let objects: Vec<&dyn Object> = vec![&self.axes];
+        // + mesh/points if present
+        target.clear(ClearState::color_and_depth(0.1, 0.1, 0.1, 1.0, 1.0));
+        target.render(&self.camera, objects, &[]);
+    }
+}
+```
+
+## Geometry Generation
+
+```rust
+// Heightfield from depth channel
+pub fn heightfield_from_channel(
+    pixels: &[f32],
+    width: usize,
+    height: usize,
+    scale: f32,
+) -> CpuMesh {
+    let mut positions = Vec::with_capacity(width * height * 3);
+    let mut indices = Vec::new();
+    
+    for y in 0..height {
+        for x in 0..width {
+            let z = pixels[y * width + x] * scale;
+            positions.push(vec3(x as f32, z, y as f32));
+        }
+    }
+    
+    // Grid triangulation
+    for y in 0..(height - 1) {
+        for x in 0..(width - 1) {
+            let i = (y * width + x) as u32;
+            indices.push(i);
+            indices.push(i + 1);
+            indices.push(i + width as u32);
+            // second triangle...
+        }
+    }
+    
+    CpuMesh { positions, indices, .. }
+}
+
+// PointCloud from P channels
+pub fn pointcloud_from_position(
+    px: &[f32], py: &[f32], pz: &[f32],
+    width: usize, height: usize,
+) -> Vec<Vec3> {
+    (0..width*height)
+        .map(|i| vec3(px[i], py[i], pz[i]))
+        .filter(|p| p.magnitude() < 1e6)  // skip invalid
+        .collect()
 }
 ```
 
@@ -75,149 +128,67 @@ impl OrbitCamera {
 
 | Input | Action |
 |-------|--------|
-| LMB drag | Orbit (rotate around target) |
-| MMB drag | Pan (move target) |
-| Scroll | Zoom (change distance) |
+| LMB drag | Orbit |
+| RMB drag | Pan |
+| Scroll | Zoom |
 | F | Fit to bounds |
-| Home | Reset camera |
-| R | Toggle wireframe/solid |
-| 1/2/3 | Switch Heightfield/PointCloud/PositionPass |
+| 1/2/3 | Heightfield/PointCloud/PositionPass |
+| G | Toggle grid |
+| W | Toggle wireframe |
 
 ## Implementation Steps
 
-### Phase 1: Camera & Basic Rendering
-1. [ ] Extract `OrbitCamera` to `camera.rs`
-2. [ ] Implement mouse interaction in egui
-3. [ ] Software rasterizer for triangles
-4. [ ] Depth buffer (painter's algorithm or z-buffer)
+### Phase 1: three-d Setup
+1. [ ] Add three-d dependency
+2. [ ] Create View3D struct with Context, Camera, OrbitControl
+3. [ ] Render loop integration with egui
+4. [ ] Basic axes + grid
 
-### Phase 2: Heightfield Mode
-1. [ ] Generate grid mesh from depth channel
-2. [ ] Vertex colors from depth (heatmap)
-3. [ ] Wireframe rendering
-4. [ ] Solid rendering with flat shading
+### Phase 2: Heightfield
+1. [ ] Channel → CpuMesh conversion
+2. [ ] Depth-based vertex colors (heatmap)
+3. [ ] PhysicalMaterial with flat shading
+4. [ ] Scale/offset controls
 
-### Phase 3: PointCloud Mode  
-1. [ ] Point rendering (circles in screen space)
+### Phase 3: PointCloud
+1. [ ] PointCloud geometry
 2. [ ] Point size control
-3. [ ] Depth-based coloring
-4. [ ] Optional: Point splatting
+3. [ ] Color by depth or channel value
 
-### Phase 4: Position Pass Mode
-1. [ ] Detect P.x/P.y/P.z channels
-2. [ ] Build point cloud from P channels
-3. [ ] Optional: Triangle reconstruction (Delaunay or grid-based)
+### Phase 4: Position Pass
+1. [ ] Auto-detect P.x/P.y/P.z channels
+2. [ ] Build geometry from P channels
+3. [ ] Optional mesh reconstruction
 
-### Phase 5: Polish
-1. [ ] Grid floor
-2. [ ] Axis gizmo
-3. [ ] Bounding box display
-4. [ ] Scale/offset controls for depth
-5. [ ] Export to OBJ/PLY
+## egui + three-d
 
-## Data Flow
-
-```
-EXR File
-    │
-    ▼
-Channel Selection (UI dropdown)
-    │
-    ├─► Single channel (Z, depth, R, etc.)
-    │       │
-    │       ▼
-    │   Heightfield or PointCloud
-    │
-    └─► P.x + P.y + P.z channels
-            │
-            ▼
-        PositionPass mode
-            │
-            ▼
-    Vec<Vec3> world positions
-            │
-            ▼
-    Camera transform → Screen coords
-            │
-            ▼
-    egui Painter (lines, circles, triangles)
-```
-
-## Software Renderer Core
+three-d рендерит в текстуру, egui показывает её как Image:
 
 ```rust
-// Triangle rasterization (scanline)
-fn rasterize_triangle(
-    painter: &Painter,
-    v0: Vec3, v1: Vec3, v2: Vec3,  // Screen coords (z = depth)
-    c0: Color32, c1: Color32, c2: Color32,
-    zbuffer: &mut [f32],
-    width: usize,
-);
-
-// Point rendering
-fn render_point(
-    painter: &Painter,
-    pos: Vec3,        // Screen coords
-    color: Color32,
-    size: f32,
-);
-
-// Line rendering (already in egui)
-fn render_line(
-    painter: &Painter,
-    p0: Pos2, p1: Pos2,
-    color: Color32,
-    width: f32,
-);
-```
-
-## Performance Considerations
-
-- **Downsampling**: For large images (4K+), downsample to ~512x512 for 3D
-- **LOD**: Distance-based point/triangle culling
-- **Frustum culling**: Skip off-screen geometry
-- **Batching**: Collect all lines/triangles, draw in single call
-
-## UI Integration
-
-```rust
-// In app.rs draw_3d_canvas()
+// В app.rs
 fn draw_3d_canvas(&mut self, ui: &mut egui::Ui, available: Vec2) {
-    let (rect, response) = ui.allocate_exact_size(available, egui::Sense::drag());
+    let size = available.as_uvec2();
+    
+    // Resize render target if needed
+    self.view3d.resize(size.x, size.y);
     
     // Handle input
-    if response.dragged_by(PointerButton::Primary) {
-        let delta = response.drag_delta();
-        self.camera.rotate(delta.x * 0.01, delta.y * 0.01);
-    }
-    if response.dragged_by(PointerButton::Middle) {
-        let delta = response.drag_delta();
-        self.camera.pan(delta.x, delta.y);
-    }
-    if let Some(scroll) = ui.input(|i| i.scroll_delta.y) {
-        self.camera.zoom(scroll * 0.1);
-    }
+    let response = ui.allocate_response(available, egui::Sense::drag());
+    self.view3d.handle_input(&response, ui);
     
-    // Render
-    let painter = ui.painter_at(rect);
-    self.render_3d(&painter, rect);
+    // Render to texture
+    self.view3d.render();
+    
+    // Show texture in egui
+    let texture_id = self.view3d.egui_texture_id();
+    ui.image(texture_id, available);
 }
 ```
 
-## Timeline Estimate
+## Test Files
 
-- Phase 1: Camera + basics - foundation
-- Phase 2: Heightfield - первый видимый результат  
-- Phase 3: PointCloud - быстро после Phase 2
-- Phase 4: Position pass - если есть P channels в тестовых файлах
-- Phase 5: Polish - по желанию
+Нужны EXR с:
+- Z/depth channel
+- P.x, P.y, P.z (position pass)
 
-## Test Data
-
-Need EXR files with:
-- [ ] Z/depth channel
-- [ ] P.x, P.y, P.z channels (position pass)
-- [ ] Deep data with varying samples
-
-Can generate with `exrs::gen` module or export from Blender/Houdini.
+Можно сгенерить через `exrs gen` или экспорт из Blender.

@@ -24,8 +24,11 @@ mod handler;
 mod messages;
 mod state;
 
+#[cfg(feature = "view-3d")]
+mod view3d;
+
 pub use app::{ViewerApp, ViewerConfig};
-pub use state::{ChannelMode, DeepMode, DepthMode, DisplayMode, ViewerState};
+pub use state::{ChannelMode, DeepMode, DepthMode, ViewerState};
 
 use std::path::Path;
 

@@ -67,6 +67,9 @@ pub enum ViewerMsg {
 
     /// Close viewer.
     Close,
+    
+    /// Request 3D depth data for visualization.
+    Request3DData,
 }
 
 /// Events from worker to UI thread.
@@ -99,4 +102,11 @@ pub enum ViewerEvent {
 
     /// Error occurred.
     Error(String),
+    
+    /// 3D depth data ready.
+    Data3DReady {
+        width: usize,
+        height: usize,
+        depth: Vec<f32>,
+    },
 }
