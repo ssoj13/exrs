@@ -165,6 +165,14 @@ impl View3D {
         let w = width / step;
         let h = height / step;
         
+        // Calculate aspect ratio to preserve image proportions
+        let aspect = width as f32 / height as f32;
+        let (scale_x, scale_z) = if aspect > 1.0 {
+            (0.5, 0.5 / aspect)
+        } else {
+            (0.5 * aspect, 0.5)
+        };
+        
         // Generate vertices
         let mut positions = Vec::with_capacity(w * h);
         let mut colors = Vec::with_capacity(w * h);
@@ -176,9 +184,9 @@ impl View3D {
                 let idx = src_y * width + src_x;
                 let z = depth.get(idx).copied().unwrap_or(0.0);
                 
-                // Normalize coords to -0.5..0.5
-                let fx = (x as f32 / w as f32) - 0.5;
-                let fz = (y as f32 / h as f32) - 0.5;
+                // Normalize coords with aspect ratio
+                let fx = (x as f32 / w as f32 - 0.5) * 2.0 * scale_x;
+                let fz = (y as f32 / h as f32 - 0.5) * 2.0 * scale_z;
                 let fy = if z.is_finite() {
                     ((z - min_z) / range) * 0.3
                 } else {
@@ -243,6 +251,14 @@ impl View3D {
         let max_points = 50000;
         let step = ((width * height) / max_points).max(1);
         
+        // Calculate aspect ratio
+        let aspect = width as f32 / height as f32;
+        let (scale_x, scale_z) = if aspect > 1.0 {
+            (0.5, 0.5 / aspect)
+        } else {
+            (0.5 * aspect, 0.5)
+        };
+        
         let mut transforms = Vec::new();
         let mut colors = Vec::new();
         
@@ -254,8 +270,8 @@ impl View3D {
             let x = i % width;
             let y = i / width;
             
-            let fx = (x as f32 / width as f32) - 0.5;
-            let fz = (y as f32 / height as f32) - 0.5;
+            let fx = (x as f32 / width as f32 - 0.5) * 2.0 * scale_x;
+            let fz = (y as f32 / height as f32 - 0.5) * 2.0 * scale_z;
             let fy = ((z - min_z) / range) * 0.3;
             
             transforms.push(Mat4::from_translation(vec3(fx, fy, fz)) * Mat4::from_scale(0.002));

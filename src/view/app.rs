@@ -792,18 +792,47 @@ impl ViewerApp {
             return;
         }
         
+        // Double-click to open file dialog (same as 2D)
+        if response.double_clicked() {
+            self.open_file_dialog();
+        }
+        
         // Convert egui input to three-d events
         let mut events = Vec::new();
         
-        if response.dragged_by(egui::PointerButton::Primary) {
-            let delta = response.drag_delta();
-            events.push(Event::MouseMotion {
-                button: Some(MouseButton::Left),
-                delta: (delta.x, delta.y),
-                position: PhysicalPoint { x: 0.0, y: 0.0 },
-                modifiers: Default::default(),
-                handled: false,
+        // Get mouse button state and delta
+        let dominated = response.dragged();
+        let delta = response.drag_delta();
+        
+        if dominated && (delta.x.abs() > 0.1 || delta.y.abs() > 0.1) {
+            // Check which button is pressed via input state
+            let (left, middle, right) = ui.input(|i| {
+                (
+                    i.pointer.button_down(egui::PointerButton::Primary),
+                    i.pointer.button_down(egui::PointerButton::Middle),
+                    i.pointer.button_down(egui::PointerButton::Secondary),
+                )
             });
+            
+            let button = if middle {
+                Some(MouseButton::Middle)
+            } else if right {
+                Some(MouseButton::Right)
+            } else if left {
+                Some(MouseButton::Left)
+            } else {
+                None
+            };
+            
+            if button.is_some() {
+                events.push(Event::MouseMotion {
+                    button,
+                    delta: (delta.x, delta.y),
+                    position: PhysicalPoint { x: 0.0, y: 0.0 },
+                    modifiers: Default::default(),
+                    handled: false,
+                });
+            }
         }
         
         // Scroll for zoom - only when hovered over 3D canvas
