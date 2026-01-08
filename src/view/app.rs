@@ -263,11 +263,6 @@ impl ViewerApp {
                 self.send_regen(ViewerMsg::SetChannelMode(ChannelMode::Luminance));
             }
 
-            // Scroll zoom
-            if i.raw_scroll_delta.y != 0.0 {
-                self.send(ViewerMsg::Zoom { factor: i.raw_scroll_delta.y * 0.002 });
-            }
-
             // Ctrl+O open file
             if i.key_pressed(egui::Key::O) && i.modifiers.ctrl {
                 self.open_file_dialog();
@@ -576,15 +571,6 @@ impl ViewerApp {
     fn draw_canvas(&mut self, ctx: &egui::Context) {
         // Sync dock state with show_3d toggle
         self.sync_dock_with_3d_toggle();
-        
-        // Track viewport size from available space
-        let available = ctx.available_rect().size();
-        if (self.state.viewport_size[0] - available.x).abs() > 1.0
-            || (self.state.viewport_size[1] - available.y).abs() > 1.0
-        {
-            self.state.viewport_size = [available.x, available.y];
-            self.send(ViewerMsg::SetViewport(self.state.viewport_size));
-        }
 
         // Extract dock_state to avoid double borrow
         let mut dock_state = std::mem::replace(&mut self.dock_state, DockState::new(vec![DockTab::View2D]));
@@ -645,6 +631,14 @@ impl ViewerApp {
     }
 
     fn draw_2d_canvas(&mut self, ui: &mut egui::Ui, available: Vec2) {
+        // Track viewport size for fit-to-window calculation
+        if (self.state.viewport_size[0] - available.x).abs() > 1.0
+            || (self.state.viewport_size[1] - available.y).abs() > 1.0
+        {
+            self.state.viewport_size = [available.x, available.y];
+            self.send(ViewerMsg::SetViewport(self.state.viewport_size));
+        }
+        
         if let Some(ref texture) = self.texture {
             let tex_size = texture.size_vec2();
             let scaled_size = tex_size * self.state.zoom;
@@ -665,6 +659,14 @@ impl ViewerApp {
             }
             if response.double_clicked() {
                 self.send(ViewerMsg::FitToWindow);
+            }
+            
+            // Scroll zoom only when hovered over 2D canvas
+            if response.hovered() {
+                let scroll = ui.input(|i| i.raw_scroll_delta.y);
+                if scroll != 0.0 {
+                    self.send(ViewerMsg::Zoom { factor: scroll * 0.002 });
+                }
             }
 
             let painter = ui.painter_at(rect);
@@ -750,15 +752,17 @@ impl ViewerApp {
             });
         }
         
-        // Scroll for zoom
-        let scroll = ui.input(|i| i.raw_scroll_delta.y);
-        if scroll.abs() > 0.1 {
-            events.push(Event::MouseWheel {
-                delta: (0.0, scroll * 0.1),
-                position: PhysicalPoint { x: 0.0, y: 0.0 },
-                modifiers: Default::default(),
-                handled: false,
-            });
+        // Scroll for zoom - only when hovered over 3D canvas
+        if response.hovered() {
+            let scroll = ui.input(|i| i.raw_scroll_delta.y);
+            if scroll.abs() > 0.1 {
+                events.push(Event::MouseWheel {
+                    delta: (0.0, scroll * 0.1),
+                    position: PhysicalPoint { x: 0.0, y: 0.0 },
+                    modifiers: Default::default(),
+                    handled: false,
+                });
+            }
         }
         
         // Handle events

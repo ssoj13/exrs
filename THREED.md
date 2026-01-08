@@ -160,28 +160,119 @@ pub fn pointcloud_from_position(
 2. [ ] Build geometry from P channels
 3. [ ] Optional mesh reconstruction
 
-## egui + three-d
+## egui + three-d (Working Solution)
 
-three-d рендерит в текстуру, egui показывает её как Image:
+three-d рендерится напрямую через egui::PaintCallback в OpenGL framebuffer.
+
+### Key API:
 
 ```rust
-// В app.rs
+use three_d::*;
+
+// ScissorBox - ограничивает область рендеринга
+let scissor = ScissorBox {
+    x: viewport.x,        // i32, от левого края
+    y: viewport.y,        // i32, от НИЖНЕГО края (OpenGL coords)
+    width: viewport.width,   // u32
+    height: viewport.height, // u32
+};
+
+// RenderTarget::screen - default framebuffer
+let screen = RenderTarget::screen(&context, width, height);
+
+// clear_partially - очищает только в scissor box
+screen.clear_partially(scissor, ClearState::color_and_depth(
+    r, g, b, a, depth_value
+));
+
+// render_partially - рендерит только в scissor box  
+screen.render_partially(scissor, &camera, objects, &lights);
+
+// Camera viewport - для projection matrix
+camera.set_viewport(Viewport { x, y, width, height });
+```
+
+### egui PaintCallback Integration:
+
+```rust
 fn draw_3d_canvas(&mut self, ui: &mut egui::Ui, available: Vec2) {
-    let size = available.as_uvec2();
+    let (rect, response) = ui.allocate_exact_size(available, egui::Sense::click_and_drag());
     
-    // Resize render target if needed
-    self.view3d.resize(size.x, size.y);
+    // Handle input (orbit, zoom)
+    // ...
     
-    // Handle input
-    let response = ui.allocate_response(available, egui::Sense::drag());
-    self.view3d.handle_input(&response, ui);
+    // OpenGL render via callback
+    let view3d_arc = self.view3d.clone();
+    let callback = egui::PaintCallback {
+        rect,
+        callback: std::sync::Arc::new(eframe::egui_glow::CallbackFn::new(move |info, _| {
+            let vp = info.clip_rect_in_pixels();
+            // vp.left_px, vp.from_bottom_px, vp.width_px, vp.height_px
+            
+            let viewport = three_d::Viewport {
+                x: vp.left_px,
+                y: vp.from_bottom_px,  // OpenGL: y from bottom
+                width: vp.width_px as u32,
+                height: vp.height_px as u32,
+            };
+            
+            if let Ok(view3d) = view3d_arc.lock() {
+                view3d.render(viewport);
+            }
+        })),
+    };
     
-    // Render to texture
-    self.view3d.render();
+    ui.painter().add(callback);
+}
+```
+
+### View3D.render() Implementation:
+
+```rust
+pub fn render(&self, viewport: Viewport) {
+    let mut camera = self.camera.clone();
+    camera.set_viewport(viewport);
     
-    // Show texture in egui
-    let texture_id = self.view3d.egui_texture_id();
-    ui.image(texture_id, available);
+    let screen = RenderTarget::screen(&self.context, viewport.width, viewport.height);
+    
+    // ScissorBox restricts clear and render to viewport area
+    let scissor = ScissorBox {
+        x: viewport.x,
+        y: viewport.y,
+        width: viewport.width,
+        height: viewport.height,
+    };
+    
+    let objects: Vec<&dyn Object> = vec![&self.axes, ...];
+    
+    screen
+        .clear_partially(scissor, ClearState::color_and_depth(0.1, 0.1, 0.1, 1.0, 1.0))
+        .render_partially(scissor, &camera, objects, &[]);
+}
+```
+
+### egui_dock для Split View:
+
+```rust
+use egui_dock::{DockArea, DockState, NodeIndex, Style, TabViewer};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DockTab { View2D, View3D }
+
+// Создание split: 60% 2D слева, 40% 3D справа
+let mut dock = DockState::new(vec![DockTab::View2D]);
+dock.main_surface_mut().split_right(NodeIndex::root(), 0.4, vec![DockTab::View3D]);
+
+// TabViewer trait implementation
+impl TabViewer for DockTabs {
+    type Tab = DockTab;
+    fn title(&mut self, tab: &mut DockTab) -> WidgetText { ... }
+    fn ui(&mut self, ui: &mut Ui, tab: &mut DockTab) {
+        match tab {
+            DockTab::View2D => self.app.draw_2d_canvas(ui, available),
+            DockTab::View3D => self.app.draw_3d_canvas(ui, available),
+        }
+    }
 }
 ```
 
