@@ -3,7 +3,7 @@
 use std::path::PathBuf;
 use egui::Color32;
 
-use crate::view::state::{ChannelMode, DeepMode, DepthMode};
+use crate::view::state::{ChannelMode, DeepMode, DepthMode, View3DMode};
 
 /// Generation counter for invalidating stale results.
 pub type Generation = u64;
@@ -70,6 +70,18 @@ pub enum ViewerMsg {
     
     /// Request 3D depth data for visualization.
     Request3DData,
+    
+    /// Set 3D visualization mode.
+    Set3DMode(View3DMode),
+    
+    /// Set point size for 3D point cloud.
+    SetPointSize(f32),
+    
+    /// Reset 3D camera to default position.
+    Reset3DCamera,
+    
+    /// Toggle 3D panel visibility.
+    Toggle3D(bool),
 }
 
 /// Events from worker to UI thread.

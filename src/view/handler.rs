@@ -9,7 +9,7 @@ use crate::image::read::deep::read_first_deep_layer_from_file;
 use crate::image::Layers;
 use crate::prelude::*;
 use crate::view::messages::{Generation, ViewerEvent, ViewerMsg};
-use crate::view::state::{ChannelMode, DeepMode, DepthMode};
+use crate::view::state::{ChannelMode, DeepMode, DepthMode, View3DMode};
 
 /// Loaded image data.
 enum LoadedImage {
@@ -44,6 +44,9 @@ pub struct ViewerHandler {
     zoom: f32,
     pan: [f32; 2],
     viewport: [f32; 2],
+    
+    // 3D settings
+    view_3d_mode: View3DMode,
 
     verbose: u8,
 }
@@ -71,6 +74,7 @@ impl ViewerHandler {
             zoom: 1.0,
             pan: [0.0, 0.0],
             viewport: [1280.0, 720.0],
+            view_3d_mode: View3DMode::Heightfield,
             verbose,
         }
     }
@@ -130,6 +134,12 @@ impl ViewerHandler {
                 ViewerMsg::Home => self.home(),
                 ViewerMsg::SetViewport(size) => self.viewport = size,
                 ViewerMsg::Request3DData => self.send_3d_data(),
+                ViewerMsg::Set3DMode(mode) => {
+                    self.view_3d_mode = mode;
+                    self.send_3d_data();
+                }
+                // UI-only messages - handled in UI thread
+                ViewerMsg::SetPointSize(_) | ViewerMsg::Reset3DCamera | ViewerMsg::Toggle3D(_) => {}
             }
         }
 

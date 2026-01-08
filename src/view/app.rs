@@ -107,6 +107,34 @@ impl ViewerApp {
     fn send(&self, msg: ViewerMsg) {
         let _ = self.tx.send(msg);
     }
+    
+    /// Handle UI-local messages that don't need worker thread.
+    #[cfg(feature = "view-3d")]
+    fn handle_ui_msg(&mut self, msg: &ViewerMsg) {
+        match msg {
+            ViewerMsg::Reset3DCamera => {
+                if let Some(view3d_arc) = &self.view3d {
+                    if let Ok(mut view3d) = view3d_arc.lock() {
+                        view3d.reset_camera();
+                    }
+                }
+                // Reset local camera state too
+                self.state.camera_yaw = 0.0;
+                self.state.camera_pitch = 0.3;
+                self.state.camera_distance = 2.0;
+            }
+            ViewerMsg::Toggle3D(enable) => {
+                self.state.show_3d = *enable;
+                if *enable {
+                    self.send(ViewerMsg::Request3DData);
+                }
+            }
+            ViewerMsg::SetPointSize(size) => {
+                self.state.point_size = *size;
+            }
+            _ => {}
+        }
+    }
 
     fn send_regen(&mut self, msg: ViewerMsg) {
         self.generation += 1;
@@ -203,7 +231,19 @@ impl ViewerApp {
                 ViewerEvent::Data3DReady { width, height, depth } => {
                     if let Some(view3d_arc) = &self.view3d {
                         if let Ok(mut view3d) = view3d_arc.lock() {
-                            view3d.set_heightfield(width, height, &depth);
+                            // Use appropriate method based on 3D mode
+                            match self.state.view_3d_mode {
+                                View3DMode::Heightfield => {
+                                    view3d.set_heightfield(width, height, &depth);
+                                }
+                                View3DMode::PointCloud => {
+                                    view3d.set_pointcloud(width, height, &depth);
+                                }
+                                View3DMode::PositionPass => {
+                                    // TODO: need P.xyz channels, for now use depth as Y
+                                    view3d.set_heightfield(width, height, &depth);
+                                }
+                            }
                         }
                     }
                 }
@@ -287,11 +327,11 @@ impl ViewerApp {
                 
                 // 3D panel toggle
                 let was_3d = self.state.show_3d;
-                ui.checkbox(&mut self.state.show_3d, "3D");
-                
-                // Request 3D data when enabling 3D
-                if !was_3d && self.state.show_3d {
-                    self.send(ViewerMsg::Request3DData);
+                if ui.checkbox(&mut self.state.show_3d, "3D").changed() && self.state.show_3d != was_3d {
+                    let msg = ViewerMsg::Toggle3D(self.state.show_3d);
+                    #[cfg(feature = "view-3d")]
+                    self.handle_ui_msg(&msg);
+                    self.send(msg);
                 }
                 ui.separator();
 
@@ -400,6 +440,10 @@ impl ViewerApp {
                                         .changed()
                                     {
                                         self.send_regen(ViewerMsg::SetDeepMode(mode));
+                                        // Update 3D view if enabled
+                                        if self.state.show_3d {
+                                            self.send(ViewerMsg::Request3DData);
+                                        }
                                     }
                                 }
                             });
@@ -498,6 +542,7 @@ impl ViewerApp {
             // Row 3: 3D controls (if 3D panel shown)
             if self.state.show_3d {
                 ui.horizontal(|ui| {
+                    let old_mode = self.state.view_3d_mode;
                     egui::ComboBox::from_label("3D Mode")
                         .selected_text(self.state.view_3d_mode.label())
                         .show_ui(ui, |ui| {
@@ -509,16 +554,25 @@ impl ViewerApp {
                                 );
                             }
                         });
+                    if self.state.view_3d_mode != old_mode {
+                        self.send(ViewerMsg::Set3DMode(self.state.view_3d_mode));
+                    }
 
                     ui.separator();
                     ui.label("Point Size:");
+                    let old_size = self.state.point_size;
                     ui.add(egui::Slider::new(&mut self.state.point_size, 1.0..=10.0));
+                    if (self.state.point_size - old_size).abs() > 0.01 {
+                        let msg = ViewerMsg::SetPointSize(self.state.point_size);
+                        self.handle_ui_msg(&msg);
+                        self.send(msg);
+                    }
 
                     ui.separator();
                     if ui.button("Reset Camera").clicked() {
-                        self.state.camera_yaw = 0.0;
-                        self.state.camera_pitch = 0.3;
-                        self.state.camera_distance = 2.0;
+                        let msg = ViewerMsg::Reset3DCamera;
+                        self.handle_ui_msg(&msg);
+                        self.send(msg);
                     }
                 });
             }

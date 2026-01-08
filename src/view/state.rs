@@ -215,7 +215,6 @@ pub struct ViewerState {
     pub camera_pitch: f32,
     pub camera_distance: f32,
     pub point_size: f32,
-    pub reset_3d_camera: bool,
 
     // Error display
     pub error: Option<String>,
