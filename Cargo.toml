@@ -44,7 +44,7 @@ rand = "0.8.5"            # used for fuzz testing
 rayon = "1.5.3"           # run tests for many files in parallel
 
 [features]
-default = ["rayon"]
+default = ["rayon", "gen", "view", "view-3d"]
 
 # rayon is used for parallel compression
 rayon = ["dep:rayon-core"]
@@ -108,23 +108,21 @@ debug = false
 debug-assertions = false
 codegen-units = 1
 
-# test with fast runtime speed and slow build speed
+# dev: fast builds, good runtime
 [profile.dev]
 incremental = true
-opt-level = 3
+opt-level = 2
 debug-assertions = true
 overflow-checks = true
 debug = true
-lto = true
 
-# test with fast runtime speed and moderate build speed
+# test: fast builds
 [profile.test]
 incremental = true
-opt-level = 3
+opt-level = 2
 debug-assertions = true
 overflow-checks = true
 debug = true
-lto = true
 
 # bench with fastest runtime speed
 [profile.bench]

@@ -594,9 +594,9 @@ impl ViewerApp {
         }
     }
 
+    #[cfg(feature = "view-3d")]
     fn draw_3d_canvas(&mut self, ui: &mut egui::Ui, available: Vec2) {
-        // 3D rendering placeholder
-        // Will be implemented with three-d when view-3d feature is enabled
+        // TODO: Implement actual 3D rendering with three-d
         let (rect, response) = ui.allocate_exact_size(available, egui::Sense::click_and_drag());
 
         // Camera orbit control
@@ -612,9 +612,24 @@ impl ViewerApp {
         painter.text(
             rect.center(),
             egui::Align2::CENTER_CENTER,
-            "3D View\n(requires view-3d feature)\n\nDrag to rotate camera",
+            "3D View (view-3d feature enabled)\n\nImplementation in progress...\n\nDrag to rotate camera",
             egui::FontId::default(),
             Color32::GRAY,
+        );
+    }
+
+    #[cfg(not(feature = "view-3d"))]
+    fn draw_3d_canvas(&mut self, ui: &mut egui::Ui, available: Vec2) {
+        let (rect, _response) = ui.allocate_exact_size(available, egui::Sense::hover());
+        
+        let painter = ui.painter_at(rect);
+        painter.rect_filled(rect, 0.0, Color32::from_gray(32));
+        painter.text(
+            rect.center(),
+            egui::Align2::CENTER_CENTER,
+            "3D View disabled\n\nRebuild with: cargo build --features view-3d",
+            egui::FontId::default(),
+            Color32::from_gray(100),
         );
     }
 
