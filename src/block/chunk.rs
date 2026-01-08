@@ -271,11 +271,8 @@ impl CompressedTileBlock {
 impl CompressedDeepScanLineBlock {
     /// Without validation, write this instance to the byte stream.
     pub fn write<W: Write>(&self, write: &mut W) -> UnitResult {
-        debug_assert_ne!(
-            self.compressed_sample_data_le.len(),
-            0,
-            "empty blocks should not be put in the file bug"
-        );
+        // Note: empty sample data is valid for deep scanlines with 0 samples per pixel.
+        // The offset table still needs to be written even if sample_data is empty.
 
         i32::write_le(self.y_coordinate, write)?;
         u64::write_le(self.compressed_pixel_offset_table.len() as u64, write)?;

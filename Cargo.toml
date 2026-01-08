@@ -29,6 +29,12 @@ smallvec = "^1.7.0"            # make cache-friendly allocations        TODO pro
 rayon-core = { version = "^1.11.0", optional = true }         # threading for parallel compression
 zune-inflate = { version = "^0.2.3", default-features = false, features = ["zlib"] }  # zip decompression, faster than miniz_oxide
 
+# View feature dependencies
+eframe = { version = "0.30", default-features = false, features = ["default_fonts", "wgpu"], optional = true }
+egui = { version = "0.30", optional = true }
+rfd = { version = "0.15", optional = true }           # file dialogs
+three-d = { version = "0.17", optional = true }       # 3D rendering
+
 [dev-dependencies]
 image = { version = "0.25.2", default-features = false, features = ["png"] }         # used to convert one exr to some pngs
 
@@ -46,6 +52,25 @@ rayon = ["dep:rayon-core"]
 # Enable test utilities (validate_results module) for integration tests.
 # Not for production use. See DEAD_CODE_ANALYSIS.md item #11.
 test-utils = []
+
+# Test image generator module
+gen = []
+
+# EXR viewer with 2D/3D visualization
+view = ["dep:eframe", "dep:egui", "dep:rfd"]
+
+# 3D viewer (point cloud, heightfield)
+view-3d = ["view", "dep:three-d"]
+
+[[bin]]
+name = "exrs-gen"
+path = "src/bin/exrs-gen.rs"
+required-features = ["gen"]
+
+[[bin]]
+name = "exrs-view"
+path = "src/bin/exrs-view.rs"
+required-features = ["view"]
 
 [[example]]
 name = "7_write_raw_blocks"

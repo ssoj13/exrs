@@ -40,6 +40,16 @@ pub mod meta;
 pub mod block;
 pub mod error;
 
+/// Test image generators (patterns, shapes, deep data).
+/// Enable with `gen` feature.
+#[cfg(feature = "gen")]
+pub mod gen;
+
+/// EXR image viewer with 2D/3D visualization.
+/// Enable with `view` feature.
+#[cfg(feature = "view")]
+pub mod view;
+
 #[macro_use]
 extern crate smallvec;
 
