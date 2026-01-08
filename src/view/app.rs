@@ -227,8 +227,17 @@ impl ViewerApp {
 
     fn draw_controls(&mut self, ctx: &egui::Context) {
         egui::TopBottomPanel::top("controls").show(ctx, |ui| {
-            // Row 1: Mode, Layer, Channel
+            // Row 1: File, Mode, Layer, Channel
             ui.horizontal(|ui| {
+                // Filename
+                if let Some(ref path) = self.state.image_path {
+                    let name = path.file_name()
+                        .and_then(|n| n.to_str())
+                        .unwrap_or("?");
+                    ui.strong(name);
+                    ui.separator();
+                }
+                
                 // 2D/3D toggle
                 ui.selectable_value(&mut self.state.display_mode, DisplayMode::View2D, "2D");
                 ui.selectable_value(&mut self.state.display_mode, DisplayMode::View3D, "3D");

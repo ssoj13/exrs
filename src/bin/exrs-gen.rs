@@ -303,38 +303,33 @@ OPTIONS:
     -V, --version         Show version
 
 EXAMPLES:
-    # Simple gradient
-    exrs-gen -s 1920x1080 -p gradient-h output.exr
+  Patterns:
+    exrs-gen -s 1k -p gradient-radial gradient.exr
+    exrs-gen -s 2k -p fbm:4:6 -c rgb noise.exr
+    exrs-gen -s fhd -p colorbars test.exr
+    exrs-gen -s 1k -p checker:16 checker.exr
 
-    # Perlin noise with custom frequency
-    exrs-gen -s 2k -p noise:8 -c rgb noise.exr
+  Z-Depth (flat EXR with depth channel):
+    exrs-gen -s 1k -z sphere -c rgbaz sphere.exr
+    exrs-gen -s 2k -z terrain:4 -c z heightmap.exr
+    exrs-gen -s 1k -z mountains:3 -p ridged:3 -c rgbaz terrain.exr
+    exrs-gen -s 1k -z waves:8 -c rgbz waves.exr
 
-    # Sphere depth map
-    exrs-gen -s 1024x1024 -z sphere -c z depth.exr
+  Deep Data (variable samples per pixel):
+    exrs-gen -s 512 -d fog:8 deep_fog.exr
+    exrs-gen -s 256 -d particles:1000 deep_particles.exr
+    exrs-gen -s 512 -d cloud:16 -r 42 deep_cloud.exr
+    exrs-gen -s 256 -d explosion deep_explosion.exr
 
-    # RGBA with Z-depth terrain
-    exrs-gen -s 4k -p fbm:4:6 -z terrain:4 -c rgbaz scene.exr
-
-    # Checkerboard pattern
-    exrs-gen -s 512x512 -p checker:16 -c rgba checker.exr
-
-    # Color bars test pattern
-    exrs-gen -s fhd -p colorbars bars.exr
-
-    # Voronoi cells as Z-depth
-    exrs-gen -s 2048x2048 -z cells:12 -c rgbz cells.exr
-
-    # Mountains heightfield
-    exrs-gen -s 4k -p ridged:3:5 -z mountains:3 -c rgbaz terrain.exr
-
-    # Random seed for variation
-    exrs-gen -s 1k -p fbm -r 12345 noise1.exr
-    exrs-gen -s 1k -p fbm -r 67890 noise2.exr
+  Viewer:
+    exrs-gen view                        # Open file dialog
+    exrs-gen view image.exr              # View specific file
+    exrs-gen -s 1k -d fog:4 fog.exr && exrs-gen view fog.exr
 
 SHORT ALIASES:
     Patterns: gh gv gr ga ch np nf nr nv w rp zp cb uv s
     Shapes:   sp bx pl cn cyl tor ter mtn ws ms
-    Deep:     p f cl gl gv e
+    Deep:     p(articles) f(og) cl(oud) gl(ass) gv(gradient-vol) e(xplosion)
 
 Use --list for complete pattern/shape/channel reference.
 Use 'exrs-gen view --help' for viewer options.
@@ -373,8 +368,17 @@ DEPTH NORMALIZATION:
     normalize the display range: Auto, Manual, or Logarithmic.
 
 EXAMPLES:
-    exrs-gen view image.exr
-    exrs-gen view               # Opens file dialog
+    exrs-gen view                     # Empty window, double-click to open
+    exrs-gen view render.exr          # View specific file
+    exrs-gen view deep_fog.exr        # View deep data (use Deep Mode menu)
+
+    # Generate and view in one command:
+    exrs-gen -s 512 -d fog:8 fog.exr && exrs-gen view fog.exr
+
+TIPS:
+    - Double-click empty area or drag-drop to open files
+    - Use Z key to view depth channel, then adjust Depth Mode
+    - For deep data: try Sample Count mode to see sample density
 "#);
 }
 
